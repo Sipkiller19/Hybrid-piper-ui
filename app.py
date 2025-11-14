@@ -1,5 +1,6 @@
-﻿import math
+import math
 from copy import deepcopy
+import datetime
 
 import pandas as pd
 import plotly.express as px
@@ -7,7 +8,6 @@ import pydeck as pdk
 import streamlit as st
 
 import hybrid_aircraft_sim as sim
-
 
 st.set_page_config(page_title="Hybrid Piper Sim", layout="wide")
 st.title("Hybrid Piper Sim")
@@ -90,15 +90,17 @@ def get_baseline_reference(tech_scenario, fuel_scenario):
 
 
 @st.cache_data(show_spinner=False)
-def run_concepts_for_map(tech_scenario, fuel_scenario):
-    """Run all default concepts for the selected scenario/fuel."""
+def run_concepts_for_map(tech_scenario, fuel_scenario, weather_signature, weather_snapshot):
+    """Run all default concepts for the selected scenario/fuel with specified weather."""
     prev_tech = sim.TECH_SCENARIO
     prev_fuel = sim.FUEL_SCENARIO
     prev_eta = (sim.ETA_MOTOR, sim.ETA_GEN, sim.ETA_BATT)
+    prev_weather = deepcopy(sim.weather_config)
 
     sim.TECH_SCENARIO = tech_scenario
     sim.configure_efficiencies(tech_scenario)
     sim.FUEL_SCENARIO = fuel_scenario
+    sim.weather_config = deepcopy(weather_snapshot)
 
     concepts = sim.build_concepts_for_scenario(tech_scenario)
     rows = []
@@ -113,8 +115,64 @@ def run_concepts_for_map(tech_scenario, fuel_scenario):
     sim.configure_efficiencies(prev_tech)
     sim.FUEL_SCENARIO = prev_fuel
     sim.ETA_MOTOR, sim.ETA_GEN, sim.ETA_BATT = prev_eta
+    sim.weather_config = prev_weather
 
     return pd.DataFrame(rows)
+
+
+def update_weather_configuration(mode_label, lat, lon, date_value, time_value):
+    mode_map = {
+        "None": "none",
+        "Live weather": "live",
+        "Mock": "mock",
+        "Select by date/time": "by_date",
+    }
+    mode = mode_map.get(mode_label, "mock")
+    config = sim.weather_config
+    config["mode"] = mode
+    config["lat"] = lat
+    config["lon"] = lon
+    if mode == "by_date":
+        if date_value is not None and time_value is not None:
+            dt = datetime.datetime.combine(date_value, time_value, tzinfo=datetime.timezone.utc)
+            config["datetime_utc"] = dt.isoformat()
+        else:
+            config["datetime_utc"] = None
+    else:
+        config["datetime_utc"] = None
+    config["wind_profile"] = []
+    sim.weather_config = config
+    sim.fetch_wind_profile(sim.weather_config)
+    signature = f"{mode}|{lat:.3f}|{lon:.3f}|{config.get('datetime_utc','')}"
+    return signature, deepcopy(sim.weather_config)
+
+
+def build_wind_arrows(weather_config, altitude_ft, spacing_deg, max_arrows=100):
+    if not weather_config.get("wind_profile"):
+        return []
+    arrow_data = []
+    lat_min, lat_max = 45.0, 60.0
+    lon_min, lon_max = -5.0, 15.0
+    spacing = max(1.0, spacing_deg)
+    lat = lat_min
+    while lat <= lat_max and len(arrow_data) < max_arrows:
+        lon = lon_min
+        while lon <= lon_max and len(arrow_data) < max_arrows:
+            wind_kt, wind_dir = sim.get_wind_at_alt(altitude_ft, weather_config["wind_profile"])
+            wind_to_deg = (wind_dir + 180.0) % 360.0
+            length_deg = 0.3 * (wind_kt / 30.0)
+            dx = math.cos(math.radians(wind_to_deg)) * length_deg
+            dy = math.sin(math.radians(wind_to_deg)) * length_deg
+            arrow_data.append(
+                {
+                    "source": [lon, lat],
+                    "target": [lon + dx, lat + dy],
+                    "speed": wind_kt,
+                }
+            )
+            lon += spacing
+        lat += spacing
+    return arrow_data
 
 
 def bounded(value, *, min_value, max_value, default):
@@ -278,6 +336,46 @@ fuel_scenario = st.sidebar.selectbox(
     ["fossil", "saf50"],
 )
 
+st.sidebar.header("Weather")
+weather_mode_label = st.sidebar.selectbox(
+    "Weather mode",
+    ["Mock", "Live weather", "Select by date/time", "None"],
+    index=0 if sim.weather_config.get("mode") in (None, "mock") else
+    (1 if sim.weather_config.get("mode") == "live" else 2 if sim.weather_config.get("mode") == "by_date" else 3),
+)
+weather_lat = st.sidebar.number_input(
+    "Latitude",
+    min_value=-90.0,
+    max_value=90.0,
+    value=float(sim.weather_config.get("lat", 52.24)),
+)
+weather_lon = st.sidebar.number_input(
+    "Longitude",
+    min_value=-180.0,
+    max_value=180.0,
+    value=float(sim.weather_config.get("lon", 6.05)),
+)
+date_value = None
+time_value = None
+if weather_mode_label == "Select by date/time":
+    default_date = datetime.date.today()
+    default_time = datetime.time(hour=datetime.datetime.utcnow().hour, minute=0)
+    date_value = st.sidebar.date_input("Date (UTC)", value=default_date)
+    time_value = st.sidebar.time_input("Time (UTC)", value=default_time)
+
+arrow_toggle = st.sidebar.checkbox("Show wind arrows", value=True)
+arrow_spacing = st.sidebar.slider("Arrow spacing (deg)", 1, 6, 3)
+arrow_altitude = st.sidebar.slider("Arrow altitude (ft)", 0, 12000, 6000, step=500)
+
+weather_signature, weather_snapshot = update_weather_configuration(
+    weather_mode_label, weather_lat, weather_lon, date_value, time_value
+)
+st.session_state["wind_display"] = {
+    "show_arrows": arrow_toggle,
+    "arrow_spacing": arrow_spacing,
+    "arrow_altitude": arrow_altitude,
+}
+
 # Configure backend for selections
 sim.TECH_SCENARIO = tech_scenario
 sim.FUEL_SCENARIO = fuel_scenario
@@ -356,7 +454,7 @@ with tab_run:
             st.metric("Landing fuel (kg)", f"{row['land_fuel_kg']:.1f}")
             st.metric("Fuel reserve (kg)", f"{row['fuel_reserve_kg']:.1f}")
         with col3:
-            st.metric("COâ‚‚ (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
+            st.metric("CO₂ (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
             st.metric("NOx (g/km)", f"{row['nox_g_per_km']:.2f}", delta=nox_delta_label)
             st.metric("Landing SOC", f"{row['land_soc']:.2f}")
 
@@ -421,7 +519,7 @@ with tab_graphs:
 
         st.subheader("Emissions breakdown")
         emissions_rows = [
-            {"Pollutant": "CO₂", "value": row["co2_g_per_km"], "unit": "g/km"},
+            {"Pollutant": "CO2", "value": row["co2_g_per_km"], "unit": "g/km"},
             {"Pollutant": "NOx", "value": row["nox_g_per_km"], "unit": "g/km"},
             {"Pollutant": "PM", "value": row["pm_mg_per_km"] / 1000.0, "unit": "g/km"},
         ]
@@ -439,7 +537,7 @@ with tab_graphs:
 
 with tab_map:
     st.markdown("#### Range map from Teuge (EHTE)")
-    summary_all = run_concepts_for_map(tech_scenario, fuel_scenario)
+    summary_all = run_concepts_for_map(tech_scenario, fuel_scenario, weather_signature, weather_snapshot)
     summary_df = st.session_state["summary_df"]
     if summary_df is not None and not summary_df.empty:
         current_row = summary_df.iloc[0].to_dict()
@@ -481,6 +579,25 @@ with tab_map:
             line_width_min_pixels=1,
             pickable=True,
         )
+        wind_display = st.session_state.get("wind_display", {})
+        arrow_layers = []
+        if wind_display.get("show_arrows", False):
+            arrow_data = build_wind_arrows(
+                sim.weather_config,
+                wind_display.get("arrow_altitude", 6000),
+                wind_display.get("arrow_spacing", 3),
+            )
+            if arrow_data:
+                arrow_layers.append(
+                    pdk.Layer(
+                        "LineLayer",
+                        data=arrow_data,
+                        get_source_position="source",
+                        get_target_position="target",
+                        get_width=2,
+                        get_color=[50, 50, 50, 200],
+                    )
+                )
         base_layer = pdk.Layer(
             "ScatterplotLayer",
             data=[{"position": TEUGE_CENTER, "name": "Teuge Airport"}],
@@ -495,7 +612,7 @@ with tab_map:
             zoom=4,
         )
         deck = pdk.Deck(
-            layers=[polygon_layer, base_layer],
+            layers=[polygon_layer, base_layer] + arrow_layers,
             initial_view_state=view_state,
             tooltip={"text": "{name}"},
         )

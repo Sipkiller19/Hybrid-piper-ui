@@ -2,6 +2,8 @@
 import logging
 from copy import deepcopy
 import math
+import datetime
+import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -119,6 +121,14 @@ FUEL_PROPERTIES = {
 BASELINE_CO2_PER_KM = None
 TECH_SCENARIO = "realistic"  # options: "realistic", "optimistic_future"
 FUEL_SCENARIO = "fossil"     # options: "fossil", "saf50"
+weather_config = {
+    "mode": "mock",
+    "lat": 52.24,
+    "lon": 6.05,
+    "datetime_utc": None,
+    "altitudes_ft": [0, 3000, 6000, 9000, 12000],
+    "wind_profile": [],
+}
 
 # Realistic ICE SFC Data (Based on Lycoming IO-360)
 ICE_SFC_DATA = {
@@ -318,6 +328,164 @@ def get_cruise_speed_ktas(mass_kg, alt_ft, mode="economy"):
     weight_correction = 3.0 * (weight_factor - 1.0)
     return max(120.0, min(150.0, base + weight_correction))
 
+
+def _mock_wind_profile(config):
+    profile = []
+    base_speed = 20.0
+    base_dir = 240.0
+    for alt in config.get("altitudes_ft", [0, 3000, 6000, 9000, 12000]):
+        speed = base_speed + (alt / 3000.0) * 2.0
+        direction = (base_dir + (alt / 1000.0) * 2.0) % 360
+        profile.append({"alt_ft": alt, "wind_kt": speed, "wind_dir_deg": direction})
+    return profile
+
+
+def fetch_wind_profile(config):
+    """Fill wind_profile using Open-Meteo data, with graceful fallback."""
+    mode = config.get("mode", "mock")
+    altitudes = config.get("altitudes_ft", [0, 3000, 6000, 9000, 12000])
+
+    if mode == "none":
+        config["wind_profile"] = [{"alt_ft": alt, "wind_kt": 0.0, "wind_dir_deg": 0.0} for alt in altitudes]
+        return config["wind_profile"]
+
+    if mode == "mock":
+        config["wind_profile"] = _mock_wind_profile(config)
+        return config["wind_profile"]
+
+    lat = float(config.get("lat", 52.24))
+    lon = float(config.get("lon", 6.05))
+    dt = config.get("datetime_utc")
+    if isinstance(dt, str):
+        try:
+            dt = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except ValueError:
+            dt = None
+    if dt is None:
+        dt = datetime.datetime.utcnow()
+    dt = dt.replace(minute=0, second=0, microsecond=0, tzinfo=datetime.timezone.utc)
+
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": ",".join(
+            [
+                "wind_speed_10m",
+                "wind_direction_10m",
+                "wind_speed_80m",
+                "wind_direction_80m",
+                "wind_speed_120m",
+                "wind_direction_120m",
+            ]
+        ),
+        "start_date": dt.date().isoformat(),
+        "end_date": dt.date().isoformat(),
+        "timezone": "UTC",
+    }
+
+    try:
+        resp = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=10)
+        resp.raise_for_status()
+        hourly = resp.json().get("hourly", {})
+        times = hourly.get("time", [])
+        if not times:
+            raise ValueError("weather data missing time axis")
+        target_ts = dt.strftime("%Y-%m-%dT%H:00")
+        if target_ts in times:
+            idx = times.index(target_ts)
+        else:
+            idx = min(range(len(times)), key=lambda i: abs(datetime.datetime.fromisoformat(times[i]) - dt))
+
+        level_data = []
+        for height in (10, 80, 120):
+            spd_key = f"wind_speed_{height}m"
+            dir_key = f"wind_direction_{height}m"
+            spd_list = hourly.get(spd_key)
+            dir_list = hourly.get(dir_key)
+            if spd_list and dir_list:
+                speed = float(spd_list[idx])
+                direction = float(dir_list[idx])
+                level_data.append({"alt_m": height, "wind_kt": speed * 0.539957, "wind_dir_deg": direction})
+
+        if not level_data:
+            raise ValueError("weather response lacked usable levels")
+
+        level_data.sort(key=lambda x: x["alt_m"])
+
+        def interp_speed_dir(target_ft):
+            target_m = target_ft * 0.3048
+            lower = level_data[0]
+            for entry in level_data:
+                if target_m < entry["alt_m"]:
+                    upper = entry
+                    break
+                lower = entry
+            else:
+                upper = None
+
+            if upper is None:
+                grad = 0.0006  # kt per meter
+                delta = target_m - level_data[-1]["alt_m"]
+                speed = level_data[-1]["wind_kt"] + grad * delta
+                direction = level_data[-1]["wind_dir_deg"]
+                return speed, direction
+
+            span = upper["alt_m"] - lower["alt_m"]
+            if span <= 0:
+                return lower["wind_kt"], lower["wind_dir_deg"]
+            frac = (target_m - lower["alt_m"]) / span
+            speed = lower["wind_kt"] + frac * (upper["wind_kt"] - lower["wind_kt"])
+            dir_diff = ((upper["wind_dir_deg"] - lower["wind_dir_deg"] + 180) % 360) - 180
+            direction = (lower["wind_dir_deg"] + frac * dir_diff) % 360
+            return speed, direction
+
+        profile = []
+        for alt in altitudes:
+            speed, direction = interp_speed_dir(alt)
+            profile.append({"alt_ft": alt, "wind_kt": max(0.0, speed), "wind_dir_deg": direction})
+        config["wind_profile"] = profile
+    except Exception as exc:
+        logging.warning(f"Weather fetch failed ({exc}); using mock wind profile.")
+        config["wind_profile"] = _mock_wind_profile(config)
+
+    return config["wind_profile"]
+
+
+def get_wind_at_alt(alt_ft, wind_profile):
+    """Linear interpolation of wind profile."""
+    if not wind_profile:
+        return 0.0, 0.0
+    lower = wind_profile[0]
+    for entry in wind_profile:
+        if alt_ft < entry["alt_ft"]:
+            upper = entry
+            break
+        lower = entry
+    else:
+        return lower["wind_kt"], lower["wind_dir_deg"]
+    span = upper["alt_ft"] - lower["alt_ft"]
+    if span <= 0:
+        return lower["wind_kt"], lower["wind_dir_deg"]
+    frac = (alt_ft - lower["alt_ft"]) / span
+    wind_speed = lower["wind_kt"] + frac * (upper["wind_kt"] - lower["wind_kt"])
+    wind_dir = (lower["wind_dir_deg"] + frac * ((upper["wind_dir_deg"] - lower["wind_dir_deg"]) % 360)) % 360
+    return wind_speed, wind_dir
+
+
+def ground_speed_from_tas_and_wind(tas_kt, track_deg, wind_speed_kt, wind_from_deg):
+    """Compute ground speed vector from TAS and wind."""
+    wind_to_deg = (wind_from_deg + 180.0) % 360.0
+    tr = math.radians(track_deg)
+    wr = math.radians(wind_to_deg)
+    vx_air = tas_kt * math.cos(tr)
+    vy_air = tas_kt * math.sin(tr)
+    vx_wind = wind_speed_kt * math.cos(wr)
+    vy_wind = wind_speed_kt * math.sin(wr)
+    vx_gnd = vx_air + vx_wind
+    vy_gnd = vy_air + vy_wind
+    gs = math.sqrt(vx_gnd ** 2 + vy_gnd ** 2)
+    return max(1.0, gs)
+
 def get_sfc(pct, eng_type, base):
     """3. Improved off-design SFC model for turbine and ICE."""
     if eng_type == "GT":
@@ -496,9 +664,16 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
         dur = 60.0
     # ---
     
-    vel_ms = phase["v_kts"] * 0.51444
+    tas_kt = phase.get("v_kts", 0.0)
+    vel_ms = tas_kt * 0.51444
     alt_ft = phase.get("alt", 0)
     rho = get_air_density(alt_ft)
+    track_deg = phase.get("track_deg", 0.0)
+    wind_kt = phase.get("wind_kt", 0.0)
+    wind_dir_deg = phase.get("wind_dir_deg", 0.0)
+    gs_kt = ground_speed_from_tas_and_wind(tas_kt, track_deg, wind_kt, wind_dir_deg)
+    gs_ms = gs_kt * 0.51444
+    distance_km = (gs_ms * dur) / 1000.0
     
     # --- GET REALISTIC AERO & PROP VALUES ---
     eta_prop = get_prop_efficiency(vel_ms, phase["name"])
@@ -968,7 +1143,7 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
             "alt_ft": alt_ft,
             "v_kts": phase["v_kts"],
             "duration_s": dur,
-            "dist_km": (vel_ms * dur) / 1000.0,
+            "dist_km": distance_km,
             "gt_power_kw": p_gt_load,
             "batt_power_kw": p_batt_load,
             "soc": current_batt_kwh / batt_kwh_max if batt_kwh_max > 0 else 0.0,
@@ -979,7 +1154,7 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
         fuel_kg,
         batt_delta,
         dur,
-        (vel_ms * dur) / 1000.0,
+        distance_km,
         ecms_failsafe_triggered,
         fuel_mj,
         fuel_liters,
@@ -1030,6 +1205,17 @@ def run_mission(name, c):
     total_pm_g = 0.0
     phase_log = []
     cruise_mode = c.get("cruise_mode", "economy")
+    mission_track_deg = c.get("mission_track_deg", 90.0)
+    if not weather_config.get("wind_profile"):
+        fetch_wind_profile(weather_config)
+
+    def apply_weather_to_phase(ph):
+        ph.setdefault("track_deg", mission_track_deg)
+        wind_profile = weather_config.get("wind_profile", [])
+        wind_kt, wind_dir = get_wind_at_alt(ph.get("alt", 0.0), wind_profile)
+        ph["wind_kt"] = wind_kt
+        ph["wind_dir_deg"] = wind_dir
+        return ph
 
     def adjust_for_remaining_fuel(available_fuel, burn_kg, fuel_mj, fuel_liters, nox_g, pm_g, phase_name):
         """Prevent negative landing fuel by scaling consumption to what remains."""
@@ -1067,7 +1253,7 @@ def run_mission(name, c):
             v = 85
             p_req = 1.0
             alt = 1000
-        ph = {"name":ph_name, "dur":dur, "v_kts":v, "p_req":p_req, "alt": alt}
+        ph = apply_weather_to_phase({"name":ph_name, "dur":dur, "v_kts":v, "p_req":p_req, "alt": alt})
 
         # --- MODIFIED: Force turbine-only reserves for overpowered Parallel Hybrid ---
         original_em_hp = 0
@@ -1111,6 +1297,7 @@ def run_mission(name, c):
                 "p_req":0.15 if "Taxi" in ph_name else (1.0 if "Take" in ph_name else 0.95),
                 "target_alt": 10000 if ph_name == "Climb" else 0,
                 "alt": ph_alt} # Use avg alt for climb calc
+        ph = apply_weather_to_phase(ph)
         
         # Pass the pre-calculated reserve battery requirement
         # --- MODIFIED: Expect 5 return values, pass total_dist_km ---
@@ -1175,6 +1362,7 @@ def run_mission(name, c):
         cruise_ph["alt"] = current_cruise_alt # Update altitude for this loop iteration
         if c.get("type") != "Series":
             cruise_ph["v_kts"] = get_cruise_speed_ktas(current_mass, current_cruise_alt, cruise_mode)
+        cruise_ph = apply_weather_to_phase(cruise_ph)
         
         # Check if we have enough reserves for ONE more minute of cruise
         usable_batt_kwh = current_batt_kwh - res_batt if requires_batt_reserve else current_batt_kwh
@@ -1247,6 +1435,7 @@ def run_mission(name, c):
         "alt": descent_mid_alt,
         "vsink_ms": 3.0,
     }
+    descent_ph = apply_weather_to_phase(descent_ph)
     res_batt_for_descent = res_batt if requires_batt_reserve else 0.0
     f, b, _, d_dist, _, fuel_mj, fuel_liters, nox_g, pm_g = calculate_phase_burns(
         descent_ph,
