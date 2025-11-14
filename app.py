@@ -639,6 +639,7 @@ with tab_graphs:
          .set_table_styles([{"selector": "th", "props": [("text-align", "left")]}])\
          .apply(lambda _: styles, axis=None)
         st.dataframe(styler, use_container_width=True)
+        st.info(f"Reserve policy: {sim.RESERVE_POLICY['name']} (30 min at normal cruise)")
 
     if summary_df is None or summary_df.empty or phases_df is None or phases_df.empty:
         st.info("Run a simulation to view detailed mission profiles.")
@@ -649,10 +650,12 @@ with tab_graphs:
         row = summary_df.iloc[0]
         fuel_per_100km = (total_fuel_kg / row["range_km"] * 100.0) if row["range_km"] > 0 else float("nan")
 
-        st.subheader("Efficiency overview")
-        eff_cols = st.columns(2)
+        st.subheader("Reserve and efficiency overview")
+        eff_cols = st.columns(3)
         eff_cols[0].metric("Fuel per 100 km (kg)", f"{fuel_per_100km:.2f}" if row["range_km"] > 0 else "N/A")
         eff_cols[1].metric("Total fuel burned (kg)", f"{total_fuel_kg:.2f}")
+        reserve_margin = row["land_fuel_kg"] - row["fuel_reserve_kg"]
+        eff_cols[2].metric("Fuel reserve margin (kg)", f"{reserve_margin:.1f}")
 
         st.subheader("SOC profile over mission")
         fig_soc = px.line(

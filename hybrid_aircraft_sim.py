@@ -129,6 +129,12 @@ weather_config = {
     "altitudes_ft": [0, 3000, 6000, 9000, 12000],
     "wind_profile": [],
 }
+RESERVE_POLICY = {
+    "name": "EASA_VFR_DAY_30MIN",
+    "extra_time_min": 30.0,
+    "reserve_alt_ft": 3000,
+    "reserve_power_frac": 0.65,
+}
 
 # Realistic ICE SFC Data (Based on Lycoming IO-360)
 ICE_SFC_DATA = {
@@ -485,6 +491,35 @@ def ground_speed_from_tas_and_wind(tas_kt, track_deg, wind_speed_kt, wind_from_d
     vy_gnd = vy_air + vy_wind
     gs = math.sqrt(vx_gnd ** 2 + vy_gnd ** 2)
     return max(1.0, gs)
+
+
+def compute_vfr_day_reserve_fuel(c, mass_for_reserve, batt_kwh_for_reserve,
+                                 batt_kwh_max, concept_cd0_base, total_dist_km):
+    """Compute fuel required for EASA VFR day reserve (30 minutes cruise)."""
+    dur_sec = int(RESERVE_POLICY["extra_time_min"] * 60.0)
+    reserve_alt = RESERVE_POLICY["reserve_alt_ft"]
+    reserve_power = RESERVE_POLICY["reserve_power_frac"]
+    reserve_v_kts = 110  # approximate endurance-oriented IAS/TAS for reserve cruise
+    reserve_phase = {
+        "name": "VFR_Reserve_Cruise",
+        "dur": dur_sec,
+        "v_kts": reserve_v_kts,
+        "p_req": reserve_power,
+        "alt": reserve_alt,
+    }
+    fuel_kg, batt_delta_kwh, _, _, _, _, _, _, _ = calculate_phase_burns(
+        reserve_phase,
+        c,
+        mass_for_reserve,
+        batt_kwh_for_reserve,
+        batt_kwh_max,
+        concept_cd0_base,
+        total_dist_km,
+        res_batt_kwh=0.0,
+        is_reserve_calc=True,
+    )
+
+    return max(0.0, fuel_kg)
 
 def get_sfc(pct, eng_type, base):
     """3. Improved off-design SFC model for turbine and ICE."""
@@ -1273,10 +1308,20 @@ def run_mission(name, c):
             c["p_em_hp"] = original_em_hp
         # --- END MODIFIED ---
         
-        res_fuel_precalc += f
-        if b > 0: 
-            res_batt_precalc += b
-    # --- END NEW ---
+    res_fuel_precalc += f
+    if b > 0: 
+        res_batt_precalc += b
+# --- END NEW ---
+
+    vfr_reserve_fuel_kg = compute_vfr_day_reserve_fuel(
+        c,
+        dummy_mass_for_res,
+        res_soc_dummy_precalc,
+        batt_max,
+        concept_cd0_base,
+        total_dist_km
+    )
+    res_fuel_precalc += vfr_reserve_fuel_kg
 
     # DEPARTURE (Climb to 12k)
     for ph_name in ["Taxi-Out", "Takeoff", "Climb"]:
