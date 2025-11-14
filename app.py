@@ -180,6 +180,7 @@ def run_concepts_for_map(
 
     concepts = sim.build_concepts_for_scenario(tech_scenario)
     rows = []
+    skipped = []
     for name, cfg in concepts.items():
         cfg = deepcopy(cfg)
         cfg["name"] = name
@@ -187,6 +188,7 @@ def run_concepts_for_map(
             cfg.update(overrides[name])
         result, _ = sim.run_mission(name, cfg)
         if result is None:
+            skipped.append(name)
             continue
 
         takeoff_mass = compute_takeoff_mass(cfg)
@@ -242,6 +244,9 @@ def run_concepts_for_map(
     sim.FUEL_SCENARIO = prev_fuel
     sim.ETA_MOTOR, sim.ETA_GEN, sim.ETA_BATT = prev_eta
     sim.weather_config = prev_weather
+
+    if skipped:
+        logging.warning(f"Skipped concepts in overlay (failed mission): {', '.join(skipped)}")
 
     return pd.DataFrame(rows)
 
@@ -911,5 +916,7 @@ with tab_map:
                 f"{concept}: best {best:.0f} km / avg {avg:.0f} km / worst {worst:.0f} km",
                 unsafe_allow_html=True,
             )
+
+
 
 
