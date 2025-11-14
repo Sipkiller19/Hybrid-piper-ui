@@ -533,13 +533,24 @@ def compute_vfr_day_reserve_fuel(c, mass_for_reserve, batt_kwh_for_reserve,
     return max(0.0, fuel_kg)
 
 
-def compute_directional_range(c, base_mass, base_batt_kwh, batt_kwh_max, concept_cd0_base, track_deg, weather_cfg, max_minutes=600):
+def compute_directional_range(
+    c,
+    base_mass,
+    base_batt_kwh,
+    batt_kwh_max,
+    concept_cd0_base,
+    track_deg,
+    weather_cfg,
+    available_fuel_kg,
+    max_minutes=600,
+):
     """Simulate a cruise leg along a specific track to determine maximum distance under current weather."""
     cruise_cfg = deepcopy(c)
     cruise_cfg["mission_track_deg"] = track_deg
     current_mass = base_mass
     current_batt_kwh = base_batt_kwh
     total_dist_km = 0.0
+    fuel_used = 0.0
     cruise_ph = {
         "name": "Cruise",
         "dur": 60,
@@ -569,17 +580,29 @@ def compute_directional_range(c, base_mass, base_batt_kwh, batt_kwh_max, concept
             total_dist_km,
             res_batt_kwh=0.0,
         )
-        if f <= 0.0 and d_dist <= 0.0:
+        if (f <= 0.0 and d_dist <= 0.0) or available_fuel_kg <= 0.0:
             break
+        fuel_used += f
         current_mass -= f
         current_batt_kwh -= b
         current_batt_kwh = max(0.0, min(current_batt_kwh, batt_kwh_max))
         total_dist_km += d_dist
         minutes += 1
+        if fuel_used >= available_fuel_kg:
+            break
     return total_dist_km
 
 
-def sample_directional_ranges(c, base_mass, base_batt_kwh, batt_kwh_max, concept_cd0_base, weather_cfg, step_deg=10):
+def sample_directional_ranges(
+    c,
+    base_mass,
+    base_batt_kwh,
+    batt_kwh_max,
+    concept_cd0_base,
+    weather_cfg,
+    available_fuel_kg,
+    step_deg=10,
+):
     cfg = deepcopy(weather_cfg)
     if not cfg.get("wind_profile"):
         fetch_wind_profile(cfg)
@@ -593,6 +616,7 @@ def sample_directional_ranges(c, base_mass, base_batt_kwh, batt_kwh_max, concept
             concept_cd0_base,
             track,
             cfg,
+            available_fuel_kg,
         )
         samples.append({"track_deg": track, "range_km": dist})
     return samples

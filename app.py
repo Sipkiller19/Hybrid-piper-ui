@@ -196,6 +196,9 @@ def run_concepts_for_map(
                 .get("CD0", 0.027)
             )
             concept_cd0_base = base_cd0 + cfg.get("cd0_adder", 0.0)
+            start_fuel_kg = compute_start_fuel_kg(cfg)
+            reserve_fuel_kg = result.get("fuel_reserve_kg", 0.0)
+            available_fuel_kg = max(start_fuel_kg - reserve_fuel_kg, 0.0)
             try:
                 samples = sim.sample_directional_ranges(
                     cfg,
@@ -204,6 +207,7 @@ def run_concepts_for_map(
                     batt_max,
                     concept_cd0_base,
                     sim.weather_config,
+                    available_fuel_kg,
                     step_deg=15,
                 )
             except Exception as exc:
@@ -300,6 +304,11 @@ def compute_takeoff_mass(cfg):
     )
     payload = cfg.get("payload_kg", 150.0)
     return mass_empty + fuel_kg + payload
+
+
+def compute_start_fuel_kg(cfg):
+    fuel_dens = sim.JET_A_DENSITY if cfg.get("fuel_type", "Jet-A") == "Jet-A" else sim.AVGAS_DENSITY
+    return cfg.get("fuel_vol_L", 0.0) * fuel_dens
 
 
 def style_summary_vs_baseline(df, baseline_row):
