@@ -4,3 +4,4 @@ plotly
 pydeck
 numpy
 matplotlib
+requests
