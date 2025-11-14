@@ -186,45 +186,56 @@ def run_concepts_for_map(
         if name in overrides:
             cfg.update(overrides[name])
         result, _ = sim.run_mission(name, cfg)
-        if result is not None:
-            takeoff_mass = compute_takeoff_mass(cfg)
-            batt_max = cfg.get("batt_kwh", 0.0)
-            base_cd0 = (
-                getattr(sim, "arrow2_data", {})
-                .get("flap_data", {})
-                .get(0, {})
-                .get("CD0", 0.027)
+        if result is None:
+            continue
+
+        takeoff_mass = compute_takeoff_mass(cfg)
+        batt_max = cfg.get("batt_kwh", 0.0)
+        base_cd0 = (
+            getattr(sim, "arrow2_data", {})
+            .get("flap_data", {})
+            .get(0, {})
+            .get("CD0", 0.027)
+        )
+        concept_cd0_base = base_cd0 + cfg.get("cd0_adder", 0.0)
+        start_fuel_kg = compute_start_fuel_kg(cfg)
+        reserve_fuel_kg = result.get("fuel_reserve_kg", 0.0)
+        available_fuel_kg = max(start_fuel_kg - reserve_fuel_kg, 0.0)
+
+        samples = []
+        try:
+            samples = sim.sample_directional_ranges(
+                cfg,
+                takeoff_mass,
+                batt_max,
+                batt_max,
+                concept_cd0_base,
+                sim.weather_config,
+                available_fuel_kg,
+                step_deg=15,
             )
-            concept_cd0_base = base_cd0 + cfg.get("cd0_adder", 0.0)
-            start_fuel_kg = compute_start_fuel_kg(cfg)
-            reserve_fuel_kg = result.get("fuel_reserve_kg", 0.0)
-            available_fuel_kg = max(start_fuel_kg - reserve_fuel_kg, 0.0)
-            try:
-                samples = sim.sample_directional_ranges(
-                    cfg,
-                    takeoff_mass,
-                    batt_max,
-                    batt_max,
-                    concept_cd0_base,
-                    sim.weather_config,
-                    available_fuel_kg,
-                    step_deg=15,
-                )
-            except Exception as exc:
-                logging.warning(f"Directional range sampling failed for {name}: {exc}")
-                samples = []
-            if samples:
-                ranges = [s["range_km"] for s in samples]
-                result["range_samples"] = samples
-                result["range_best_km"] = max(ranges)
-                result["range_worst_km"] = min(ranges)
-                result["range_avg_km"] = sum(ranges) / len(ranges)
-            else:
-                result["range_samples"] = []
-                result["range_best_km"] = result.get("range_km", 0.0)
-                result["range_worst_km"] = result.get("range_km", 0.0)
-                result["range_avg_km"] = result.get("range_km", 0.0)
-            rows.append(result)
+        except Exception as exc:
+            logging.warning(f"Directional range sampling failed for {name}: {exc}")
+            samples = []
+
+        ranges = [s["range_km"] for s in samples if s["range_km"] > 0]
+        row_range = max(result.get("range_km", 0.0), 0.0)
+        if not ranges or (row_range > 0 and max(ranges) > row_range * 1.25):
+            samples = []
+            ranges = []
+
+        if samples and ranges:
+            result["range_samples"] = samples
+            result["range_best_km"] = max(ranges)
+            result["range_worst_km"] = min(ranges)
+            result["range_avg_km"] = sum(ranges) / len(ranges)
+        else:
+            result["range_samples"] = []
+            result["range_best_km"] = row_range
+            result["range_worst_km"] = row_range
+            result["range_avg_km"] = row_range
+
+        rows.append(result)
 
     sim.TECH_SCENARIO = prev_tech
     sim.configure_efficiencies(prev_tech)
@@ -679,9 +690,16 @@ with tab_run:
             st.metric("Landing fuel (kg)", f"{row['land_fuel_kg']:.1f}")
             st.metric("Fuel reserve (kg)", f"{row['fuel_reserve_kg']:.1f}")
         with col3:
-            st.metric("COâ‚‚ (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
+            st.metric("CO₂ (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
             st.metric("NOx (g/km)", f"{row['nox_g_per_km']:.2f}", delta=nox_delta_label)
             st.metric("Landing SOC", f"{row['land_soc']:.2f}")
+        range_best = row.get("range_best_km", row["range_km"])
+        range_avg = row.get("range_avg_km", row["range_km"])
+        range_worst = row.get("range_worst_km", row["range_km"])
+        dir_cols = st.columns(3)
+        dir_cols[0].metric("Best range (km)", f"{range_best:.0f}")
+        dir_cols[1].metric("Average range (km)", f"{range_avg:.0f}")
+        dir_cols[2].metric("Worst range (km)", f"{range_worst:.0f}")
 
 
 with tab_graphs:
