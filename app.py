@@ -49,11 +49,12 @@ def edit_concept_parameters(concept_name, concept_cfg):
         value=float(concept_cfg.get("wt_gt", 0.0)),
     )
 
+    default_sfc = float(concept_cfg.get("gt_sfc_design", 0.3))
     concept_cfg["gt_sfc_design"] = st.sidebar.number_input(
         "GT SFC (kg/hp·hr)",
         min_value=0.1,
         max_value=1.0,
-        value=float(concept_cfg.get("gt_sfc_design", 0.3)),
+        value=max(0.1, min(1.0, default_sfc)),
         step=0.01,
     )
 
