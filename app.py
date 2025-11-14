@@ -228,6 +228,46 @@ def build_wind_arrows(weather_config, altitude_ft, spacing_deg, max_arrows=100):
     return arrow_data
 
 
+def compute_takeoff_mass(cfg):
+    fuel_dens = sim.JET_A_DENSITY if cfg.get("fuel_type", "Jet-A") == "Jet-A" else sim.AVGAS_DENSITY
+    fuel_kg = cfg.get("fuel_vol_L", 0.0) * fuel_dens
+    mass_empty = (
+        sim.BASE_AIRFRAME_KG
+        + cfg.get("wt_ice", 0.0)
+        + cfg.get("wt_gt", 0.0)
+        + cfg.get("wt_gen", 0.0)
+        + cfg.get("wt_em", 0.0)
+        + cfg.get("wt_batt", 0.0)
+        + cfg.get("base_mass_adder", 0.0)
+    )
+    payload = cfg.get("payload_kg", 150.0)
+    return mass_empty + fuel_kg + payload
+
+
+def style_summary_vs_baseline(df, baseline_row):
+    compare_cols = {
+        "range_km": "higher",
+        "co2_g_per_km": "lower",
+        "nox_g_per_km": "lower",
+        "pm_mg_per_km": "lower",
+        "land_fuel_kg": "higher",
+        "landing_soc": "higher",
+    }
+    styles = pd.DataFrame("", index=df.index, columns=df.columns)
+    for col, preference in compare_cols.items():
+        if col not in df or pd.isna(baseline_row.get(col)):
+            continue
+        base_val = baseline_row[col]
+        for idx, val in df[col].items():
+            if pd.isna(val):
+                continue
+            if preference == "higher":
+                styles.loc[idx, col] = "color: green" if val >= base_val else "color: red"
+            else:
+                styles.loc[idx, col] = "color: green" if val <= base_val else "color: red"
+    return styles
+
+
 def bounded(value, *, min_value, max_value, default):
     """Clamp values so Streamlit inputs always start inside allowed bounds."""
     if value is None:
@@ -349,6 +389,14 @@ def render_parameter_controls(concept_cfg):
         value=float(concept_cfg.get("base_mass_adder", 0.0)),
         step=5.0,
     )
+    mission_cols = st.columns(2)
+    concept_cfg["payload_kg"] = mission_cols[0].number_input(
+        "Payload mass (kg)",
+        min_value=0.0,
+        max_value=400.0,
+        value=float(concept_cfg.get("payload_kg", 150.0)),
+        step=5.0,
+    )
 
     st.markdown("### Mission options")
     cruise_mode_display = {
@@ -439,6 +487,21 @@ if st.sidebar.button("Reset all parameters to defaults"):
         rerunner()
 saved_configs_snapshot = st.session_state.get("saved_configs") or {}
 overrides_signature = json.dumps(saved_configs_snapshot, sort_keys=True)
+summary_df = st.session_state["summary_df"]
+phases_df = st.session_state["phases_df"]
+summary_all_data = run_concepts_for_map(
+    tech_scenario,
+    fuel_scenario,
+    weather_signature,
+    weather_snapshot,
+    overrides_signature,
+)
+if summary_df is not None and not summary_df.empty:
+    mask = summary_all_data["concept"] == summary_df.iloc[0]["concept"]
+    if any(mask):
+        for key, val in summary_df.iloc[0].items():
+            if key in summary_all_data.columns:
+                summary_all_data.loc[mask, key] = val
 
 # Configure backend for selections
 sim.TECH_SCENARIO = tech_scenario
@@ -484,7 +547,13 @@ with tab_edit:
 
 with tab_run:
     st.markdown("#### Execute the mission")
-    run_clicked = st.button("Run simulation now", use_container_width=True)
+    takeoff_mass = compute_takeoff_mass(st.session_state["concept_cfg"])
+    mtow = sim.MTOW_KG
+    over_mtow = takeoff_mass > mtow
+    st.metric("Takeoff mass vs MTOW", f"{takeoff_mass:.0f} / {mtow:.0f} kg", delta=f"{takeoff_mass-mtow:.0f} kg" if over_mtow else f"{mtow-takeoff_mass:.0f} kg margin")
+    if over_mtow:
+        st.error("Exceeds MTOW. Reduce payload, fuel, or mass modifiers before running the simulation.")
+    run_clicked = st.button("Run simulation now", use_container_width=True, disabled=over_mtow)
 
     if run_clicked:
         with st.spinner("Running simulation..."):
@@ -538,20 +607,48 @@ with tab_run:
 
 with tab_graphs:
     st.markdown("#### Plots and data")
-    summary_df = st.session_state["summary_df"]
-    phases_df = st.session_state["phases_df"]
-    if summary_df is None or phases_df is None or summary_df.empty or phases_df.empty:
-        st.info("Run a simulation first (tab: 'Run simulation').")
+    if summary_all_data.empty:
+        st.info("No simulation data available for this scenario.")
     else:
-        st.subheader("Summary data")
-        st.dataframe(summary_df, use_container_width=True)
+        st.subheader("Summary across all concepts")
+        baseline = summary_all_data[summary_all_data["concept"] == "Baseline (Avgas)"]
+        baseline_row = baseline.iloc[0] if not baseline.empty else summary_all_data.iloc[0]
+        display_cols = [
+            "concept",
+            "range_km",
+            "co2_g_per_km",
+            "nox_g_per_km",
+            "pm_mg_per_km",
+            "land_fuel_kg",
+            "fuel_reserve_kg",
+            "land_soc",
+        ]
+        table = summary_all_data[display_cols].copy()
+        styles = style_summary_vs_baseline(table, baseline_row)
+        styler = table.style.format(
+            {
+                "range_km": "{:.0f}",
+                "co2_g_per_km": "{:.0f}",
+                "nox_g_per_km": "{:.2f}",
+                "pm_mg_per_km": "{:.1f}",
+                "land_fuel_kg": "{:.1f}",
+                "fuel_reserve_kg": "{:.1f}",
+                "land_soc": "{:.2f}",
+            }
+        ).set_properties(**{"font-weight": "bold"})\
+         .set_table_styles([{"selector": "th", "props": [("text-align", "left")]}])\
+         .apply(lambda _: styles, axis=None)
+        st.dataframe(styler, use_container_width=True)
 
+    if summary_df is None or summary_df.empty or phases_df is None or phases_df.empty:
+        st.info("Run a simulation to view detailed mission profiles.")
+    else:
         df = phases_df.copy()
         df["cum_dist_km"] = df["dist_km"].cumsum()
-
         total_fuel_kg = df.get("fuel_kg", pd.Series(dtype=float)).sum()
         row = summary_df.iloc[0]
         fuel_per_100km = (total_fuel_kg / row["range_km"] * 100.0) if row["range_km"] > 0 else float("nan")
+
         st.subheader("Efficiency overview")
         eff_cols = st.columns(2)
         eff_cols[0].metric("Fuel per 100 km (kg)", f"{fuel_per_100km:.2f}" if row["range_km"] > 0 else "N/A")
@@ -614,22 +711,7 @@ with tab_graphs:
 
 with tab_map:
     st.markdown("#### Range map from Teuge (EHTE)")
-    summary_all = run_concepts_for_map(
-        tech_scenario,
-        fuel_scenario,
-        weather_signature,
-        weather_snapshot,
-        overrides_signature,
-    )
-    summary_df = st.session_state["summary_df"]
-    if summary_df is not None and not summary_df.empty:
-        current_row = summary_df.iloc[0].to_dict()
-        mask = summary_all["concept"] == current_row["concept"]
-        if any(mask):
-            for key, val in current_row.items():
-                summary_all.loc[mask, key] = val
-        else:
-            summary_all = pd.concat([summary_all, summary_df], ignore_index=True)
+    summary_all = summary_all_data.copy()
     if summary_all.empty:
         st.info("No simulation data available for this scenario.")
     else:

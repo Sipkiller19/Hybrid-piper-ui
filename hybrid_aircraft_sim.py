@@ -1188,10 +1188,12 @@ def run_mission(name, c):
         + c["wt_batt"]
         + c["base_mass_adder"]
     )
-    current_mass = mass_empty + current_fuel_kg + 150 # PAYLOAD 150 KG
+    payload_kg = c.get("payload_kg", 150.0)
+    current_mass = mass_empty + current_fuel_kg + payload_kg
+    takeoff_mass = current_mass
     
     logging.info(f"Takeoff Mass: {current_mass:.0f} kg (MTOW: {MTOW_KG:.0f} kg)")
-    logging.info(f"  (Empty: {mass_empty:.0f} kg, Fuel: {current_fuel_kg:.0f} kg, Batt: {c['wt_batt']:.0f} kg, Payload: 150 kg)")
+    logging.info(f"  (Empty: {mass_empty:.0f} kg, Fuel: {current_fuel_kg:.0f} kg, Batt: {c['wt_batt']:.0f} kg, Payload: {payload_kg:.0f} kg)")
     if current_mass > MTOW_KG:
         logging.warning(f"!! [FAILED: OVERWEIGHT] By {current_mass - MTOW_KG:.0f} kg !!")
         return None, phase_log
@@ -1523,6 +1525,8 @@ def run_mission(name, c):
         "nox_g_per_km": nox_per_km_g if total_dist_km > 0 else 0.0,
         "pm_mg_per_km": pm_per_km_mg if total_dist_km > 0 else 0.0,
         "marketable": marketable,
+        "takeoff_mass_kg": takeoff_mass,
+        "payload_kg": payload_kg,
     }
     return result, phase_log
 
