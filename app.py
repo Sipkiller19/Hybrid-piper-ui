@@ -189,7 +189,13 @@ def run_concepts_for_map(
         if result is not None:
             takeoff_mass = compute_takeoff_mass(cfg)
             batt_max = cfg.get("batt_kwh", 0.0)
-            concept_cd0_base = sim.arrow2_data["flap_data"][0]["CD0"] + cfg.get("cd0_adder", 0.0)
+            base_cd0 = (
+                getattr(sim, "arrow2_data", {})
+                .get("flap_data", {})
+                .get(0, {})
+                .get("CD0", 0.027)
+            )
+            concept_cd0_base = base_cd0 + cfg.get("cd0_adder", 0.0)
             try:
                 samples = sim.sample_directional_ranges(
                     cfg,
