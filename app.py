@@ -115,6 +115,37 @@ def render_parameter_controls(concept_cfg):
         value=float(concept_cfg.get("batt_kwh", 0.0)),
         step=5.0,
     )
+    prop_cols3 = st.columns(3)
+    concept_cfg["p_gen_kw"] = prop_cols3[0].number_input(
+        "Generator power (kW)",
+        min_value=0.0,
+        max_value=400.0,
+        value=float(concept_cfg.get("p_gen_kw", concept_cfg.get("p_gt_hp", 0) * 0.7457)),
+        step=5.0,
+    )
+    concept_cfg["wt_gen"] = prop_cols3[1].number_input(
+        "Generator mass (kg)",
+        min_value=0.0,
+        max_value=200.0,
+        value=float(concept_cfg.get("wt_gen", 0.0)),
+        step=2.0,
+    )
+    if concept_cfg.get("batt_kwh", 0) > 0:
+        batt_cols = st.columns(2)
+        concept_cfg["batt_c_max"] = batt_cols[0].number_input(
+            "Battery max discharge C-rate",
+            min_value=0.1,
+            max_value=6.0,
+            value=float(concept_cfg.get("batt_c_max", 3.0)),
+            step=0.1,
+        )
+        concept_cfg["batt_c_chg_max"] = batt_cols[1].number_input(
+            "Battery max charge C-rate",
+            min_value=0.1,
+            max_value=3.0,
+            value=float(concept_cfg.get("batt_c_chg_max", 1.0)),
+            step=0.1,
+        )
 
     st.markdown("### Airframe modifiers")
     air_cols = st.columns(3)
@@ -140,6 +171,22 @@ def render_parameter_controls(concept_cfg):
         value=float(concept_cfg.get("base_mass_adder", 0.0)),
         step=5.0,
     )
+
+    st.markdown("### Mission options")
+    cruise_mode_display = {
+        "economy": "Economy (best range)",
+        "fast": "Fast (high speed)",
+    }
+    current_mode = concept_cfg.get("cruise_mode", "economy")
+    mode_options = list(cruise_mode_display.keys())
+    selected_mode = st.selectbox(
+        "Cruise mode",
+        options=mode_options,
+        format_func=lambda x: cruise_mode_display.get(x, x),
+        index=mode_options.index(current_mode) if current_mode in mode_options else 0,
+    )
+    concept_cfg["cruise_mode"] = selected_mode
+
     return concept_cfg
 
 
