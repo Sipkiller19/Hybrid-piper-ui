@@ -1,4 +1,4 @@
-﻿import math
+import math
 from copy import deepcopy
 import datetime
 import json
@@ -225,11 +225,20 @@ def run_concepts_for_map(
             logging.warning(f"Directional range sampling failed for {name}: {exc}")
             samples = []
 
-        ranges = [s["range_km"] for s in samples if s["range_km"] > 0]
+        ranges = [max(s["range_km"], 0.0) for s in samples]
         row_range = max(result.get("range_km", 0.0), 0.0)
-        if not ranges or (row_range > 0 and max(ranges) > row_range * 1.25):
+        result["range_mission_km"] = row_range
+        if not ranges:
             samples = []
             ranges = []
+        else:
+            avg_sample = sum(ranges) / len(ranges)
+            target_range = row_range if row_range > 0 else avg_sample
+            if avg_sample > 0 and target_range > 0:
+                scale = target_range / avg_sample
+                ranges = [max(r * scale, 0.0) for r in ranges]
+            for sample, r in zip(samples, ranges):
+                sample["range_km"] = r
 
         if samples and ranges:
             result["range_samples"] = samples
@@ -253,7 +262,13 @@ def run_concepts_for_map(
     if skipped:
         logging.warning(f"Skipped concepts in overlay (failed mission): {', '.join(skipped)}")
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        if "range_mission_km" not in df.columns:
+            df["range_mission_km"] = df.get("range_km", 0.0)
+        if "range_avg_km" in df.columns:
+            df["range_km"] = df["range_avg_km"].where(~df["range_avg_km"].isna(), df["range_km"])
+    return df
 
 
 def update_weather_configuration(mode_label, lat, lon, date_value, time_value):
@@ -593,6 +608,14 @@ if summary_df is not None and not summary_df.empty:
         for key, val in summary_df.iloc[0].items():
             if key in summary_all_data.columns:
                 summary_all_data.loc[mask, key] = val
+        if "range_mission_km" in summary_all_data.columns:
+            summary_all_data.loc[mask, "range_mission_km"] = summary_df.iloc[0].get(
+                "range_km", summary_all_data.loc[mask, "range_mission_km"]
+            )
+        if "range_avg_km" in summary_all_data.columns:
+            summary_all_data.loc[mask, "range_km"] = summary_all_data.loc[mask, "range_avg_km"].fillna(
+                summary_all_data.loc[mask, "range_km"]
+            )
 
 # Configure backend for selections
 sim.TECH_SCENARIO = tech_scenario
@@ -652,7 +675,7 @@ with tab_run:
     wind_speed, wind_dir = sim.get_wind_at_alt(wind_alt_ft, wind_profile)
     wind_cols = st.columns(2)
     wind_cols[0].metric(f"Wind @ {wind_alt_ft} ft", f"{wind_speed:.0f} kt")
-    wind_cols[1].metric("Direction (from)", f"{wind_dir:.0f}Â°")
+    wind_cols[1].metric("Direction (from)", f"{wind_dir:.0f} deg")
     run_clicked = st.button("Run simulation now", use_container_width=True, disabled=over_mtow)
 
     if run_clicked:
@@ -694,13 +717,13 @@ with tab_run:
         st.markdown("#### Key metrics")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Range (km)", f"{row['range_km']:.0f}")
+            st.metric("Range (km)", f"{row.get('range_avg_km', row['range_km']):.0f}")
             st.metric("Cruise time (h)", f"{row['cruise_hours']:.2f}")
         with col2:
             st.metric("Landing fuel (kg)", f"{row['land_fuel_kg']:.1f}")
             st.metric("Fuel reserve (kg)", f"{row['fuel_reserve_kg']:.1f}")
         with col3:
-            st.metric("CO₂ (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
+            st.metric("CO2 (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
             st.metric("NOx (g/km)", f"{row['nox_g_per_km']:.2f}", delta=nox_delta_label)
             st.metric("Landing SOC", f"{row['land_soc']:.2f}")
         range_best = row.get("range_best_km", row["range_km"])
@@ -921,6 +944,7 @@ with tab_map:
                 f"{concept}: best {best:.0f} km / avg {avg:.0f} km / worst {worst:.0f} km",
                 unsafe_allow_html=True,
             )
+
 
 
 
