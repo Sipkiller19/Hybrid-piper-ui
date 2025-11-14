@@ -186,7 +186,12 @@ def run_concepts_for_map(
         cfg["name"] = name
         if name in overrides:
             cfg.update(overrides[name])
-        result, _ = sim.run_mission(name, cfg)
+        try:
+            result, _ = sim.run_mission(name, cfg)
+        except Exception as exc:
+            logging.warning(f"run_mission failed for {name}: {exc}")
+            skipped.append(name)
+            continue
         if result is None:
             skipped.append(name)
             continue
@@ -916,6 +921,7 @@ with tab_map:
                 f"{concept}: best {best:.0f} km / avg {avg:.0f} km / worst {worst:.0f} km",
                 unsafe_allow_html=True,
             )
+
 
 
 
