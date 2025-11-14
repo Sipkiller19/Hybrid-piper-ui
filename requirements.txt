@@ -1,1 +1,6 @@
-Set-Content -Path requirements.txt -Value "streamlit`npandas`nplotly`npydeck`nnumpy`nmatplotlib" -Encoding utf8
+streamlit
+pandas
+plotly
+pydeck
+numpy
+matplotlib
