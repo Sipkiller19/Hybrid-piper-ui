@@ -434,7 +434,9 @@ if st.sidebar.button("Reset all parameters to defaults"):
         CONFIG_FILE.unlink()
     st.session_state["concept_cfg"] = None
     st.session_state["concept_key"] = None
-    st.experimental_rerun()
+    rerunner = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+    if rerunner:
+        rerunner()
 saved_configs_snapshot = st.session_state.get("saved_configs") or {}
 overrides_signature = json.dumps(saved_configs_snapshot, sort_keys=True)
 
