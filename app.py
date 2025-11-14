@@ -639,7 +639,8 @@ with tab_graphs:
          .set_table_styles([{"selector": "th", "props": [("text-align", "left")]}])\
          .apply(lambda _: styles, axis=None)
         st.dataframe(styler, use_container_width=True)
-        st.info(f"Reserve policy: {sim.RESERVE_POLICY['name']} (30 min at normal cruise)")
+        policy_name = getattr(sim, "RESERVE_POLICY", {}).get("name", "EASA VFR day (30 min)")
+        st.info(f"Reserve policy: {policy_name} (30 min at normal cruise)")
 
     if summary_df is None or summary_df.empty or phases_df is None or phases_df.empty:
         st.info("Run a simulation to view detailed mission profiles.")

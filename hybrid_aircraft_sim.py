@@ -506,6 +506,7 @@ def compute_vfr_day_reserve_fuel(c, mass_for_reserve, batt_kwh_for_reserve,
         "v_kts": reserve_v_kts,
         "p_req": reserve_power,
         "alt": reserve_alt,
+        "force_power_frac": reserve_power,
     }
     fuel_kg, batt_delta_kwh, _, _, _, _, _, _, _ = calculate_phase_burns(
         reserve_phase,
@@ -714,9 +715,17 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
     eta_prop = get_prop_efficiency(vel_ms, phase["name"])
     current_cd0, current_k = get_aero_coeffs(phase["name"], concept_cd0_base)
 
+    force_power_frac = phase.get("force_power_frac")
+
     # --- REALISTIC POWER CALCULATION ---
-    # Use drag-based power only for cruise/descent.
-    if phase["v_kts"] > 0 and "alt" in phase and phase["name"] not in ["Takeoff", "Climb", "Go-Around"]:
+    # Use drag-based power only for cruise/descent, unless force_power_frac is set.
+    if force_power_frac is not None:
+        avail_hp = c.get("p_gt_hp", 0) + c.get("p_ice_hp", 0)
+        if avail_hp <= 0:
+            avail_hp = P_BASELINE_HP
+        p_req_shaft_kw = avail_hp * 0.7457 * max(0.0, min(1.0, force_power_frac))
+        p_req_prop_kw = p_req_shaft_kw * eta_prop
+    elif phase["v_kts"] > 0 and "alt" in phase and phase["name"] not in ["Takeoff", "Climb", "Go-Around"]:
         cl = (current_mass * 9.81) / (0.5 * rho * vel_ms**2 * S_W_M2)
         cd = current_cd0 + current_k * cl**2
         drag_n = 0.5 * rho * vel_ms**2 * S_W_M2 * cd
