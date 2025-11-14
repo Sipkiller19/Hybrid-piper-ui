@@ -2,6 +2,7 @@
 from copy import deepcopy
 import datetime
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -189,15 +190,19 @@ def run_concepts_for_map(
             takeoff_mass = compute_takeoff_mass(cfg)
             batt_max = cfg.get("batt_kwh", 0.0)
             concept_cd0_base = sim.arrow2_data["flap_data"][0]["CD0"] + cfg.get("cd0_adder", 0.0)
-            samples = sim.sample_directional_ranges(
-                cfg,
-                takeoff_mass,
-                batt_max,
-                batt_max,
-                concept_cd0_base,
-                sim.weather_config,
-                step_deg=15,
-            )
+            try:
+                samples = sim.sample_directional_ranges(
+                    cfg,
+                    takeoff_mass,
+                    batt_max,
+                    batt_max,
+                    concept_cd0_base,
+                    sim.weather_config,
+                    step_deg=15,
+                )
+            except Exception as exc:
+                logging.warning(f"Directional range sampling failed for {name}: {exc}")
+                samples = []
             if samples:
                 ranges = [s["range_km"] for s in samples]
                 result["range_samples"] = samples
