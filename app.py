@@ -1,6 +1,8 @@
 import math
 from copy import deepcopy
 import datetime
+import json
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -13,6 +15,7 @@ st.set_page_config(page_title="Hybrid Piper Sim", layout="wide")
 st.title("Hybrid Piper Sim")
 
 TEUGE_CENTER = [6.05, 52.24]  # [lon, lat]
+CONFIG_FILE = Path(__file__).with_name("user_concept_configs.json")
 CONCEPT_COLORS = {
     "Baseline (Avgas)": [0, 102, 204],
     "4.1.2 Parallel Hybrid": [220, 53, 69],
@@ -30,6 +33,7 @@ def init_state():
         "concept_cfg": None,
         "concept_key": None,
         "baseline_refs": {},
+        "saved_configs": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -37,6 +41,40 @@ def init_state():
 
 
 init_state()
+
+
+def load_saved_configs():
+    if st.session_state["saved_configs"] is None:
+        if CONFIG_FILE.exists():
+            try:
+                data = json.loads(CONFIG_FILE.read_text())
+            except Exception:
+                data = {}
+        else:
+            data = {}
+        st.session_state["saved_configs"] = data
+
+
+def persist_configs():
+    try:
+        CONFIG_FILE.write_text(json.dumps(st.session_state["saved_configs"], indent=2))
+    except Exception as exc:
+        st.warning(f"Could not persist configs: {exc}")
+
+
+load_saved_configs()
+
+
+def get_saved_config(concept_label):
+    saved = st.session_state.get("saved_configs") or {}
+    return deepcopy(saved.get(concept_label, {}))
+
+
+def save_concept_config(concept_label, cfg):
+    saved = st.session_state.get("saved_configs") or {}
+    saved[concept_label] = {k: v for k, v in cfg.items() if isinstance(v, (int, float, str))}
+    st.session_state["saved_configs"] = saved
+    persist_configs()
 
 
 def make_circle_polygon(center_lon, center_lat, radius_km, n_points=180):
@@ -90,7 +128,13 @@ def get_baseline_reference(tech_scenario, fuel_scenario):
 
 
 @st.cache_data(show_spinner=False)
-def run_concepts_for_map(tech_scenario, fuel_scenario, weather_signature, weather_snapshot):
+def run_concepts_for_map(
+    tech_scenario,
+    fuel_scenario,
+    weather_signature,
+    weather_snapshot,
+    overrides_signature,
+):
     """Run all default concepts for the selected scenario/fuel with specified weather."""
     prev_tech = sim.TECH_SCENARIO
     prev_fuel = sim.FUEL_SCENARIO
@@ -102,11 +146,20 @@ def run_concepts_for_map(tech_scenario, fuel_scenario, weather_signature, weathe
     sim.FUEL_SCENARIO = fuel_scenario
     sim.weather_config = deepcopy(weather_snapshot)
 
+    overrides = {}
+    if overrides_signature:
+        try:
+            overrides = json.loads(overrides_signature)
+        except Exception:
+            overrides = {}
+
     concepts = sim.build_concepts_for_scenario(tech_scenario)
     rows = []
     for name, cfg in concepts.items():
         cfg = deepcopy(cfg)
         cfg["name"] = name
+        if name in overrides:
+            cfg.update(overrides[name])
         result, _ = sim.run_mission(name, cfg)
         if result is not None:
             rows.append(result)
@@ -375,6 +428,15 @@ st.session_state["wind_display"] = {
     "arrow_spacing": arrow_spacing,
     "arrow_altitude": arrow_altitude,
 }
+if st.sidebar.button("Reset all parameters to defaults"):
+    st.session_state["saved_configs"] = {}
+    if CONFIG_FILE.exists():
+        CONFIG_FILE.unlink()
+    st.session_state["concept_cfg"] = None
+    st.session_state["concept_key"] = None
+    st.experimental_rerun()
+saved_configs_snapshot = st.session_state.get("saved_configs") or {}
+overrides_signature = json.dumps(saved_configs_snapshot, sort_keys=True)
 
 # Configure backend for selections
 sim.TECH_SCENARIO = tech_scenario
@@ -383,6 +445,9 @@ sim.configure_efficiencies(tech_scenario)
 concepts = sim.build_concepts_for_scenario(tech_scenario)
 concept_cfg_base = deepcopy(concepts[concept_label])
 concept_cfg_base["name"] = concept_label
+saved_override = get_saved_config(concept_label)
+if saved_override:
+    concept_cfg_base.update(saved_override)
 
 concept_key = (concept_label, tech_scenario, fuel_scenario)
 if st.session_state["concept_key"] != concept_key or st.session_state["concept_cfg"] is None:
@@ -398,11 +463,8 @@ tab_run, tab_edit, tab_graphs, tab_map = st.tabs(
 
 with tab_edit:
     st.markdown("#### Adjust concept parameters")
-    if concept_label == "Baseline (Avgas)":
-        st.info("Baseline aircraft parameters are fixed and cannot be edited.")
-        st.session_state["concept_cfg"] = concept_cfg_base
-    else:
-        st.session_state["concept_cfg"] = render_parameter_controls(concept_cfg_state)
+    st.session_state["concept_cfg"] = render_parameter_controls(concept_cfg_state)
+    save_concept_config(concept_label, st.session_state["concept_cfg"])
 
 
 with tab_run:
@@ -537,7 +599,13 @@ with tab_graphs:
 
 with tab_map:
     st.markdown("#### Range map from Teuge (EHTE)")
-    summary_all = run_concepts_for_map(tech_scenario, fuel_scenario, weather_signature, weather_snapshot)
+    summary_all = run_concepts_for_map(
+        tech_scenario,
+        fuel_scenario,
+        weather_signature,
+        weather_snapshot,
+        overrides_signature,
+    )
     summary_df = st.session_state["summary_df"]
     if summary_df is not None and not summary_df.empty:
         current_row = summary_df.iloc[0].to_dict()
