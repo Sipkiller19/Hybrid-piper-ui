@@ -181,7 +181,7 @@ BASE_CONCEPTS = {
         "p_gt_hp": 240,  "wt_gt": 98,   "gt_sfc_design": 0.35,
         "p_gen_kw": 50,  "wt_gen": 15,
         "p_em_hp": 50,   "wt_em": 15,   "batt_kwh": 30, "wt_batt": 0, # Placeholder, will be calculated
-        "fuel_type": "Jet-A", "fuel_vol_L": 200,
+        "fuel_type": "Jet-A", "fuel_vol_L": 182,
         "base_mass_adder": 30,
         "cd0_adder": 0.002, # Drag from cooling vents, nacelles
         "batt_c_max": 3.0,
@@ -195,7 +195,7 @@ BASE_CONCEPTS = {
         # --- END MODIFIED ---
         "p_gen_kw": 180, "wt_gen": 30,
         "p_em_hp": 200,  "wt_em": 50,   "batt_kwh": 40  , "wt_batt": 0, # MODIFIED: Reduced from 60 to 30
-        "fuel_type": "Jet-A", "fuel_vol_L": 160,
+        "fuel_type": "Jet-A", "fuel_vol_L": 182,
         "base_mass_adder": 40,
         "cd0_adder": 0.003, # Larger cooling drag
         "batt_c_max": 3.0,
@@ -207,7 +207,7 @@ BASE_CONCEPTS = {
         "p_gt_hp": 200,  "wt_gt": 90,   "gt_sfc_design": 0.42,
         "p_gen_kw": 150, "wt_gen": 25,
         "p_em_hp": 200,  "wt_em": 50,   "batt_kwh": 15, "wt_batt": 0, # Placeholder, will be calculated
-        "fuel_type": "Jet-A", "fuel_vol_L": 140,
+        "fuel_type": "Jet-A", "fuel_vol_L": 182,
         "base_mass_adder": 80,
         "cd0_adder": 0.004, # Most complex, highest cooling drag
         "batt_c_max": 2.5,
@@ -261,7 +261,6 @@ def build_concepts_for_scenario(scenario):
             concept = scenario_concepts["4.1.3 Series Hybrid"]
             concept["gt_sfc_design"] = 0.20
             concept["wt_gt"] = 100
-            concept["fuel_vol_L"] = 130
             concept["cd0_adder"] = 0.0025
         if "4.1.4 Parallel-Series" in scenario_concepts:
             concept = scenario_concepts["4.1.4 Parallel-Series"]
