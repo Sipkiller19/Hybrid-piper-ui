@@ -1,4 +1,4 @@
-import math
+﻿import math
 from copy import deepcopy
 
 import pandas as pd
@@ -13,6 +13,13 @@ st.set_page_config(page_title="Hybrid Piper Sim", layout="wide")
 st.title("Hybrid Piper Sim")
 
 TEUGE_CENTER = [6.05, 52.24]  # [lon, lat]
+CONCEPT_COLORS = {
+    "Baseline (Avgas)": [0, 102, 204],
+    "4.1.2 Parallel Hybrid": [220, 53, 69],
+    "4.1.3 Series Hybrid": [25, 135, 84],
+    "4.1.4 Parallel-Series": [255, 159, 64],
+    "4.1.5 Turboprop": [111, 66, 193],
+}
 
 
 def init_state():
@@ -22,6 +29,7 @@ def init_state():
         "last_result": None,
         "concept_cfg": None,
         "concept_key": None,
+        "baseline_refs": {},
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -48,6 +56,65 @@ def make_circle_polygon(center_lon, center_lat, radius_km, n_points=180):
         )
         coords.append([math.degrees(lon_rad), math.degrees(lat_rad)])
     return [coords]
+
+
+def get_baseline_reference(tech_scenario, fuel_scenario):
+    """Run or retrieve the reference Baseline (Avgas) mission for comparison."""
+    cache_key = f"{tech_scenario}_{fuel_scenario}"
+    refs = st.session_state.get("baseline_refs", {})
+    if cache_key in refs:
+        return refs[cache_key]
+    concepts = sim.build_concepts_for_scenario(tech_scenario)
+    baseline_cfg = concepts.get("Baseline (Avgas)")
+    if baseline_cfg is None:
+        return None
+    baseline_cfg = deepcopy(baseline_cfg)
+    baseline_cfg["name"] = "Baseline (Avgas)"
+
+    prev_tech = sim.TECH_SCENARIO
+    prev_fuel = sim.FUEL_SCENARIO
+    if prev_tech != tech_scenario:
+        sim.TECH_SCENARIO = tech_scenario
+        sim.configure_efficiencies(tech_scenario)
+    sim.FUEL_SCENARIO = fuel_scenario
+
+    result, _ = sim.run_mission("Baseline (Avgas)", baseline_cfg)
+    refs[cache_key] = result
+    st.session_state["baseline_refs"] = refs
+
+    if prev_tech != tech_scenario:
+        sim.TECH_SCENARIO = prev_tech
+        sim.configure_efficiencies(prev_tech)
+    sim.FUEL_SCENARIO = prev_fuel
+    return result
+
+
+@st.cache_data(show_spinner=False)
+def run_concepts_for_map(tech_scenario, fuel_scenario):
+    """Run all default concepts for the selected scenario/fuel."""
+    prev_tech = sim.TECH_SCENARIO
+    prev_fuel = sim.FUEL_SCENARIO
+    prev_eta = (sim.ETA_MOTOR, sim.ETA_GEN, sim.ETA_BATT)
+
+    sim.TECH_SCENARIO = tech_scenario
+    sim.configure_efficiencies(tech_scenario)
+    sim.FUEL_SCENARIO = fuel_scenario
+
+    concepts = sim.build_concepts_for_scenario(tech_scenario)
+    rows = []
+    for name, cfg in concepts.items():
+        cfg = deepcopy(cfg)
+        cfg["name"] = name
+        result, _ = sim.run_mission(name, cfg)
+        if result is not None:
+            rows.append(result)
+
+    sim.TECH_SCENARIO = prev_tech
+    sim.configure_efficiencies(prev_tech)
+    sim.FUEL_SCENARIO = prev_fuel
+    sim.ETA_MOTOR, sim.ETA_GEN, sim.ETA_BATT = prev_eta
+
+    return pd.DataFrame(rows)
 
 
 def bounded(value, *, min_value, max_value, default):
@@ -86,7 +153,7 @@ def render_parameter_controls(concept_cfg):
         default=0.3,
     )
     concept_cfg["gt_sfc_design"] = prop_cols[2].number_input(
-        "GT SFC (kg/hp·hr)",
+        "GT SFC (kg/hp-hr)",
         min_value=0.1,
         max_value=1.0,
         value=default_sfc,
@@ -233,7 +300,11 @@ tab_run, tab_edit, tab_graphs, tab_map = st.tabs(
 
 with tab_edit:
     st.markdown("#### Adjust concept parameters")
-    st.session_state["concept_cfg"] = render_parameter_controls(concept_cfg_state)
+    if concept_label == "Baseline (Avgas)":
+        st.info("Baseline aircraft parameters are fixed and cannot be edited.")
+        st.session_state["concept_cfg"] = concept_cfg_base
+    else:
+        st.session_state["concept_cfg"] = render_parameter_controls(concept_cfg_state)
 
 
 with tab_run:
@@ -259,6 +330,23 @@ with tab_run:
         st.info("Run a simulation to see key metrics.")
     else:
         row = summary_df.iloc[0]
+        cache_key = f"{tech_scenario}_{fuel_scenario}"
+        if concept_label == "Baseline (Avgas)":
+            baseline_result = row.to_dict()
+            st.session_state["baseline_refs"][cache_key] = baseline_result
+        else:
+            baseline_result = get_baseline_reference(tech_scenario, fuel_scenario)
+        co2_delta_label = None
+        nox_delta_label = None
+        if baseline_result:
+            base_co2 = baseline_result.get("co2_g_per_km", 0)
+            base_nox = baseline_result.get("nox_g_per_km", 0)
+            if base_co2:
+                delta = ((row["co2_g_per_km"] - base_co2) / base_co2) * 100
+                co2_delta_label = f"{delta:+.1f}% vs base"
+            if base_nox:
+                delta = ((row["nox_g_per_km"] - base_nox) / base_nox) * 100
+                nox_delta_label = f"{delta:+.1f}% vs base"
         st.markdown("#### Key metrics")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -268,8 +356,8 @@ with tab_run:
             st.metric("Landing fuel (kg)", f"{row['land_fuel_kg']:.1f}")
             st.metric("Fuel reserve (kg)", f"{row['fuel_reserve_kg']:.1f}")
         with col3:
-            st.metric("CO₂ (g/km)", f"{row['co2_g_per_km']:.0f}")
-            st.metric("NOx (g/km)", f"{row['nox_g_per_km']:.2f}")
+            st.metric("COâ‚‚ (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
+            st.metric("NOx (g/km)", f"{row['nox_g_per_km']:.2f}", delta=nox_delta_label)
             st.metric("Landing SOC", f"{row['land_soc']:.2f}")
 
 
@@ -285,6 +373,14 @@ with tab_graphs:
 
         df = phases_df.copy()
         df["cum_dist_km"] = df["dist_km"].cumsum()
+
+        total_fuel_kg = df.get("fuel_kg", pd.Series(dtype=float)).sum()
+        row = summary_df.iloc[0]
+        fuel_per_100km = (total_fuel_kg / row["range_km"] * 100.0) if row["range_km"] > 0 else float("nan")
+        st.subheader("Efficiency overview")
+        eff_cols = st.columns(2)
+        eff_cols[0].metric("Fuel per 100 km (kg)", f"{fuel_per_100km:.2f}" if row["range_km"] > 0 else "N/A")
+        eff_cols[1].metric("Total fuel burned (kg)", f"{total_fuel_kg:.2f}")
 
         st.subheader("SOC profile over mission")
         fig_soc = px.line(
@@ -311,24 +407,77 @@ with tab_graphs:
         )
         st.plotly_chart(fig_power, use_container_width=True)
 
+        if "fuel_kg" in df.columns:
+            st.subheader("Fuel burn per phase")
+            phase_fuel_df = df.groupby("phase")["fuel_kg"].sum().reset_index()
+            fig_phase_fuel = px.bar(
+                phase_fuel_df,
+                x="phase",
+                y="fuel_kg",
+                labels={"fuel_kg": "Fuel (kg)", "phase": "Phase"},
+                title="Fuel burn per mission phase",
+            )
+            st.plotly_chart(fig_phase_fuel, use_container_width=True)
+
+        st.subheader("Emissions breakdown")
+        emissions_rows = [
+            {"Pollutant": "CO₂", "value": row["co2_g_per_km"], "unit": "g/km"},
+            {"Pollutant": "NOx", "value": row["nox_g_per_km"], "unit": "g/km"},
+            {"Pollutant": "PM", "value": row["pm_mg_per_km"] / 1000.0, "unit": "g/km"},
+        ]
+        emissions_df = pd.DataFrame(emissions_rows)
+        fig_emissions = px.bar(
+            emissions_df,
+            x="Pollutant",
+            y="value",
+            color="Pollutant",
+            labels={"value": "Intensity (g/km)"},
+            title="Emissions intensity per km",
+        )
+        st.plotly_chart(fig_emissions, use_container_width=True)
+
 
 with tab_map:
     st.markdown("#### Range map from Teuge (EHTE)")
+    summary_all = run_concepts_for_map(tech_scenario, fuel_scenario)
     summary_df = st.session_state["summary_df"]
-    if summary_df is None or summary_df.empty:
-        st.info("Run a simulation first (tab: 'Run simulation').")
+    if summary_df is not None and not summary_df.empty:
+        current_row = summary_df.iloc[0].to_dict()
+        mask = summary_all["concept"] == current_row["concept"]
+        if any(mask):
+            for key, val in current_row.items():
+                summary_all.loc[mask, key] = val
+        else:
+            summary_all = pd.concat([summary_all, summary_df], ignore_index=True)
+    if summary_all.empty:
+        st.info("No simulation data available for this scenario.")
     else:
-        row = summary_df.iloc[0]
-        range_km = float(row["range_km"])
-        circle_polygon = make_circle_polygon(
-            TEUGE_CENTER[0], TEUGE_CENTER[1], range_km
-        )
+        polygon_data = []
+        legend_entries = []
+        for _, row in summary_all.iterrows():
+            concept = row["concept"]
+            range_km = float(row.get("range_km", 0))
+            color_rgb = CONCEPT_COLORS.get(concept, [80, 80, 80])
+            circle_polygon = make_circle_polygon(
+                TEUGE_CENTER[0], TEUGE_CENTER[1], max(range_km, 0)
+            )
+            polygon_data.append(
+                {
+                    "polygon": circle_polygon,
+                    "name": f"{concept} ({range_km:.0f} km)",
+                    "range_km": range_km,
+                    "color": color_rgb + [50],
+                    "line_color": color_rgb + [200],
+                }
+            )
+            legend_entries.append((concept, range_km, color_rgb))
+
         polygon_layer = pdk.Layer(
             "PolygonLayer",
-            data=[{"polygon": circle_polygon, "name": f"Range {range_km:.0f} km"}],
+            data=polygon_data,
             get_polygon="polygon",
-            get_fill_color="[255, 0, 0, 40]",
-            get_line_color="[255, 0, 0, 200]",
+            get_fill_color="color",
+            get_line_color="line_color",
             line_width_min_pixels=1,
             pickable=True,
         )
@@ -351,3 +500,13 @@ with tab_map:
             tooltip={"text": "{name}"},
         )
         st.pydeck_chart(deck, use_container_width=True)
+
+        st.markdown("**Legend**")
+        for concept, rng, color in legend_entries:
+            hex_color = "#{:02x}{:02x}{:02x}".format(*color)
+            st.markdown(
+                f"<span style='display:inline-block;width:16px;height:16px;background:{hex_color};border:1px solid #222;margin-right:8px;'></span>"
+                f"{concept}: {rng:.0f} km",
+                unsafe_allow_html=True,
+            )
+

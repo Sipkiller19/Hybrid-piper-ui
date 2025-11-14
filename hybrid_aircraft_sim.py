@@ -1030,6 +1030,17 @@ def run_mission(name, c):
     total_pm_g = 0.0
     phase_log = []
     cruise_mode = c.get("cruise_mode", "economy")
+
+    def adjust_for_remaining_fuel(available_fuel, burn_kg, fuel_mj, fuel_liters, nox_g, pm_g, phase_name):
+        """Prevent negative landing fuel by scaling consumption to what remains."""
+        if burn_kg <= available_fuel + 1e-6 or burn_kg <= 0:
+            return burn_kg, fuel_mj, fuel_liters, nox_g, pm_g
+        if available_fuel <= 0:
+            logging.warning(f"!! [FAILED: OUT OF FUEL] Attempted {burn_kg:.2f} kg during {phase_name} but none left. Clamping to zero.")
+            return 0.0, 0.0, 0.0, 0.0, 0.0
+        scale = available_fuel / burn_kg
+        logging.warning(f"!! [WARNING: FUEL BELOW ZERO] Capping {phase_name} burn from {burn_kg:.2f} kg to available {available_fuel:.2f} kg.")
+        return available_fuel, fuel_mj * scale, fuel_liters * scale, nox_g * scale, pm_g * scale
     
     # --- NEW: Pre-calculate reserve battery need ---
     # We must calculate this *before* climb so the climb phase can respect it
@@ -1115,6 +1126,9 @@ def run_mission(name, c):
             res_batt_kwh=reserve_kwh_for_phase,
             phase_log_list=phase_log,
         )
+        f, fuel_mj, fuel_liters, nox_g, pm_g = adjust_for_remaining_fuel(
+            current_fuel_kg, f, fuel_mj, fuel_liters, nox_g, pm_g, ph_name
+        )
         
         current_fuel_kg -= f; current_mass -= f; current_batt_kwh -= b; total_dist_km += d_dist
         current_batt_kwh = max(0.0, min(current_batt_kwh, batt_max)) # Cap SOC within bounds
@@ -1190,6 +1204,9 @@ def run_mission(name, c):
             res_batt_kwh=res_batt_for_cruise,
             phase_log_list=phase_log,
         )
+        f, fuel_mj, fuel_liters, nox_g, pm_g = adjust_for_remaining_fuel(
+            current_fuel_kg, f, fuel_mj, fuel_liters, nox_g, pm_g, "Cruise"
+        )
         
         # --- MODIFIED: Handle ECMS failsafe by descending ---
         if failsafe_triggered:
@@ -1241,6 +1258,9 @@ def run_mission(name, c):
         total_dist_km,
         res_batt_kwh=res_batt_for_descent,
         phase_log_list=phase_log,
+    )
+    f, fuel_mj, fuel_liters, nox_g, pm_g = adjust_for_remaining_fuel(
+        current_fuel_kg, f, fuel_mj, fuel_liters, nox_g, pm_g, "Descent"
     )
     current_fuel_kg -= f
     current_mass -= f
