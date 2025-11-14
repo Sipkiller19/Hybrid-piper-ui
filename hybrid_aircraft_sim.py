@@ -196,7 +196,7 @@ BASE_CONCEPTS = {
         "p_gen_kw": 180, "wt_gen": 30,
         "p_em_hp": 200,  "wt_em": 50,   "batt_kwh": 40  , "wt_batt": 0, # MODIFIED: Reduced from 60 to 30
         "fuel_type": "Jet-A", "fuel_vol_L": 182,
-        "base_mass_adder": 40,
+        "base_mass_adder": 20,
         "cd0_adder": 0.003, # Larger cooling drag
         "batt_c_max": 3.0,
         "batt_c_chg_max": 1.0,
@@ -1336,6 +1336,7 @@ def run_mission(name, c):
     
     logging.info(f"Takeoff Mass: {current_mass:.0f} kg (MTOW: {MTOW_KG:.0f} kg)")
     logging.info(f"  (Empty: {mass_empty:.0f} kg, Fuel: {current_fuel_kg:.0f} kg, Batt: {c['wt_batt']:.0f} kg, Payload: {payload_kg:.0f} kg)")
+    phase_log = []
     if current_mass > MTOW_KG:
         logging.warning(f"!! [FAILED: OVERWEIGHT] By {current_mass - MTOW_KG:.0f} kg !!")
         return None, phase_log
@@ -1347,7 +1348,6 @@ def run_mission(name, c):
     total_fuel_l = 0.0
     total_nox_g = 0.0
     total_pm_g = 0.0
-    phase_log = []
     cruise_mode = c.get("cruise_mode", "economy")
     mission_track_deg = c.get("mission_track_deg", 90.0)
     if not weather_config.get("wind_profile"):
@@ -1407,9 +1407,9 @@ def run_mission(name, c):
             c["p_em_hp"] = original_em_hp
         # --- END MODIFIED ---
         
-    res_fuel_precalc += f
-    if b > 0: 
-        res_batt_precalc += b
+        res_fuel_precalc += f
+        if b > 0: 
+            res_batt_precalc += b
 # --- END NEW ---
 
     vfr_reserve_fuel_kg = compute_vfr_day_reserve_fuel(
