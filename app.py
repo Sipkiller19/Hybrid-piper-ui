@@ -465,6 +465,19 @@ tab_run, tab_edit, tab_graphs, tab_map = st.tabs(
 
 with tab_edit:
     st.markdown("#### Adjust concept parameters")
+    if st.button(f"Reset '{concept_label}' to defaults"):
+        saved = st.session_state.get("saved_configs") or {}
+        if concept_label in saved:
+            saved.pop(concept_label)
+            st.session_state["saved_configs"] = saved
+            persist_configs()
+        reset_cfg = deepcopy(concepts[concept_label])
+        reset_cfg["name"] = concept_label
+        st.session_state["concept_cfg"] = reset_cfg
+        st.session_state["concept_key"] = None
+        rerunner = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+        if rerunner:
+            rerunner()
     st.session_state["concept_cfg"] = render_parameter_controls(concept_cfg_state)
     save_concept_config(concept_label, st.session_state["concept_cfg"])
 
