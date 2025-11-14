@@ -1,4 +1,4 @@
-import math
+﻿import math
 from copy import deepcopy
 import datetime
 import json
@@ -96,6 +96,30 @@ def make_circle_polygon(center_lon, center_lat, radius_km, n_points=180):
     return [coords]
 
 
+def make_directional_polygon(center_lon, center_lat, samples):
+    if not samples:
+        return []
+    samples = sorted(samples, key=lambda s: s["track_deg"])
+    coords = []
+    lat1 = math.radians(center_lat)
+    lon1 = math.radians(center_lon)
+    earth_radius_km = 6371.0
+    for sample in samples:
+        dist_ratio = sample["range_km"] / earth_radius_km
+        bearing = math.radians(sample["track_deg"])
+        lat2 = math.asin(
+            math.sin(lat1) * math.cos(dist_ratio)
+            + math.cos(lat1) * math.sin(dist_ratio) * math.cos(bearing)
+        )
+        lon2 = lon1 + math.atan2(
+            math.sin(bearing) * math.sin(dist_ratio) * math.cos(lat1),
+            math.cos(dist_ratio) - math.sin(lat1) * math.sin(lat2),
+        )
+        coords.append([math.degrees(lon2), math.degrees(lat2)])
+    coords.append(coords[0])
+    return [coords]
+
+
 def get_baseline_reference(tech_scenario, fuel_scenario):
     """Run or retrieve the reference Baseline (Avgas) mission for comparison."""
     cache_key = f"{tech_scenario}_{fuel_scenario}"
@@ -162,6 +186,29 @@ def run_concepts_for_map(
             cfg.update(overrides[name])
         result, _ = sim.run_mission(name, cfg)
         if result is not None:
+            takeoff_mass = compute_takeoff_mass(cfg)
+            batt_max = cfg.get("batt_kwh", 0.0)
+            concept_cd0_base = sim.arrow2_data["flap_data"][0]["CD0"] + cfg.get("cd0_adder", 0.0)
+            samples = sim.sample_directional_ranges(
+                cfg,
+                takeoff_mass,
+                batt_max,
+                batt_max,
+                concept_cd0_base,
+                sim.weather_config,
+                step_deg=15,
+            )
+            if samples:
+                ranges = [s["range_km"] for s in samples]
+                result["range_samples"] = samples
+                result["range_best_km"] = max(ranges)
+                result["range_worst_km"] = min(ranges)
+                result["range_avg_km"] = sum(ranges) / len(ranges)
+            else:
+                result["range_samples"] = []
+                result["range_best_km"] = result.get("range_km", 0.0)
+                result["range_worst_km"] = result.get("range_km", 0.0)
+                result["range_avg_km"] = result.get("range_km", 0.0)
             rows.append(result)
 
     sim.TECH_SCENARIO = prev_tech
@@ -247,6 +294,9 @@ def compute_takeoff_mass(cfg):
 def style_summary_vs_baseline(df, baseline_row):
     compare_cols = {
         "range_km": "higher",
+        "range_best_km": "higher",
+        "range_avg_km": "higher",
+        "range_worst_km": "higher",
         "co2_g_per_km": "lower",
         "nox_g_per_km": "lower",
         "pm_mg_per_km": "lower",
@@ -553,6 +603,15 @@ with tab_run:
     st.metric("Takeoff mass vs MTOW", f"{takeoff_mass:.0f} / {mtow:.0f} kg", delta=f"{takeoff_mass-mtow:.0f} kg" if over_mtow else f"{mtow-takeoff_mass:.0f} kg margin")
     if over_mtow:
         st.error("Exceeds MTOW. Reduce payload, fuel, or mass modifiers before running the simulation.")
+    wind_alt_ft = st.session_state["wind_display"].get("arrow_altitude", 6000)
+    wind_profile = sim.weather_config.get("wind_profile", [])
+    if not wind_profile:
+        sim.fetch_wind_profile(sim.weather_config)
+        wind_profile = sim.weather_config.get("wind_profile", [])
+    wind_speed, wind_dir = sim.get_wind_at_alt(wind_alt_ft, wind_profile)
+    wind_cols = st.columns(2)
+    wind_cols[0].metric(f"Wind @ {wind_alt_ft} ft", f"{wind_speed:.0f} kt")
+    wind_cols[1].metric("Direction (from)", f"{wind_dir:.0f}Â°")
     run_clicked = st.button("Run simulation now", use_container_width=True, disabled=over_mtow)
 
     if run_clicked:
@@ -600,7 +659,7 @@ with tab_run:
             st.metric("Landing fuel (kg)", f"{row['land_fuel_kg']:.1f}")
             st.metric("Fuel reserve (kg)", f"{row['fuel_reserve_kg']:.1f}")
         with col3:
-            st.metric("CO₂ (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
+            st.metric("COâ‚‚ (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
             st.metric("NOx (g/km)", f"{row['nox_g_per_km']:.2f}", delta=nox_delta_label)
             st.metric("Landing SOC", f"{row['land_soc']:.2f}")
 
@@ -616,6 +675,9 @@ with tab_graphs:
         display_cols = [
             "concept",
             "range_km",
+            "range_best_km",
+            "range_avg_km",
+            "range_worst_km",
             "co2_g_per_km",
             "nox_g_per_km",
             "pm_mg_per_km",
@@ -628,6 +690,9 @@ with tab_graphs:
         styler = table.style.format(
             {
                 "range_km": "{:.0f}",
+                "range_best_km": "{:.0f}",
+                "range_avg_km": "{:.0f}",
+                "range_worst_km": "{:.0f}",
                 "co2_g_per_km": "{:.0f}",
                 "nox_g_per_km": "{:.2f}",
                 "pm_mg_per_km": "{:.1f}",
@@ -725,19 +790,32 @@ with tab_map:
             concept = row["concept"]
             range_km = float(row.get("range_km", 0))
             color_rgb = CONCEPT_COLORS.get(concept, [80, 80, 80])
-            circle_polygon = make_circle_polygon(
-                TEUGE_CENTER[0], TEUGE_CENTER[1], max(range_km, 0)
-            )
+            samples = row.get("range_samples")
+            if isinstance(samples, list) and samples:
+                polygon_coords = make_directional_polygon(TEUGE_CENTER[0], TEUGE_CENTER[1], samples)
+            else:
+                polygon_coords = make_circle_polygon(
+                    TEUGE_CENTER[0], TEUGE_CENTER[1], max(range_km, 0)
+                )
             polygon_data.append(
                 {
-                    "polygon": circle_polygon,
+                    "polygon": polygon_coords,
                     "name": f"{concept} ({range_km:.0f} km)",
                     "range_km": range_km,
                     "color": color_rgb + [50],
                     "line_color": color_rgb + [200],
                 }
             )
-            legend_entries.append((concept, range_km, color_rgb))
+            legend_entries.append(
+                (
+                    concept,
+                    range_km,
+                    color_rgb,
+                    row.get("range_best_km", range_km),
+                    row.get("range_avg_km", range_km),
+                    row.get("range_worst_km", range_km),
+                )
+            )
 
         polygon_layer = pdk.Layer(
             "PolygonLayer",
@@ -788,11 +866,12 @@ with tab_map:
         st.pydeck_chart(deck, use_container_width=True)
 
         st.markdown("**Legend**")
-        for concept, rng, color in legend_entries:
+        for concept, rng, color, best, avg, worst in legend_entries:
             hex_color = "#{:02x}{:02x}{:02x}".format(*color)
             st.markdown(
                 f"<span style='display:inline-block;width:16px;height:16px;background:{hex_color};border:1px solid #222;margin-right:8px;'></span>"
-                f"{concept}: {rng:.0f} km",
+                f"{concept}: best {best:.0f} km / avg {avg:.0f} km / worst {worst:.0f} km",
                 unsafe_allow_html=True,
             )
+
 

@@ -335,6 +335,16 @@ def get_cruise_speed_ktas(mass_kg, alt_ft, mode="economy"):
     return max(120.0, min(150.0, base + weight_correction))
 
 
+def apply_weather_to_phase(phase, weather_cfg, default_track_deg):
+    phase = phase.copy()
+    phase.setdefault("track_deg", default_track_deg)
+    wind_profile = weather_cfg.get("wind_profile", [])
+    wind_kt, wind_dir = get_wind_at_alt(phase.get("alt", 0.0), wind_profile)
+    phase["wind_kt"] = wind_kt
+    phase["wind_dir_deg"] = wind_dir
+    return phase
+
+
 def _mock_wind_profile(config):
     profile = []
     base_speed = 20.0
@@ -521,6 +531,71 @@ def compute_vfr_day_reserve_fuel(c, mass_for_reserve, batt_kwh_for_reserve,
     )
 
     return max(0.0, fuel_kg)
+
+
+def compute_directional_range(c, base_mass, base_batt_kwh, batt_kwh_max, concept_cd0_base, track_deg, weather_cfg, max_minutes=600):
+    """Simulate a cruise leg along a specific track to determine maximum distance under current weather."""
+    cruise_cfg = deepcopy(c)
+    cruise_cfg["mission_track_deg"] = track_deg
+    current_mass = base_mass
+    current_batt_kwh = base_batt_kwh
+    total_dist_km = 0.0
+    cruise_ph = {
+        "name": "Cruise",
+        "dur": 60,
+        "v_kts": get_cruise_speed_ktas(current_mass, 10000, cruise_cfg.get("cruise_mode", "economy")),
+        "alt": 10000,
+    }
+    minutes = 0
+    while minutes < max_minutes:
+        cruise_ph = apply_weather_to_phase(
+            {
+                "name": "Cruise",
+                "dur": 60,
+                "v_kts": cruise_ph["v_kts"],
+                "alt": cruise_ph["alt"],
+                "track_deg": track_deg,
+            },
+            weather_cfg,
+            track_deg,
+        )
+        f, b, _, d_dist, _, _, _, _, _ = calculate_phase_burns(
+            cruise_ph,
+            cruise_cfg,
+            current_mass,
+            current_batt_kwh,
+            batt_kwh_max,
+            concept_cd0_base,
+            total_dist_km,
+            res_batt_kwh=0.0,
+        )
+        if f <= 0.0 and d_dist <= 0.0:
+            break
+        current_mass -= f
+        current_batt_kwh -= b
+        current_batt_kwh = max(0.0, min(current_batt_kwh, batt_kwh_max))
+        total_dist_km += d_dist
+        minutes += 1
+    return total_dist_km
+
+
+def sample_directional_ranges(c, base_mass, base_batt_kwh, batt_kwh_max, concept_cd0_base, weather_cfg, step_deg=10):
+    cfg = deepcopy(weather_cfg)
+    if not cfg.get("wind_profile"):
+        fetch_wind_profile(cfg)
+    samples = []
+    for track in range(0, 360, step_deg):
+        dist = compute_directional_range(
+            c,
+            base_mass,
+            base_batt_kwh,
+            batt_kwh_max,
+            concept_cd0_base,
+            track,
+            cfg,
+        )
+        samples.append({"track_deg": track, "range_km": dist})
+    return samples
 
 def get_sfc(pct, eng_type, base):
     """3. Improved off-design SFC model for turbine and ICE."""
@@ -1255,14 +1330,6 @@ def run_mission(name, c):
     if not weather_config.get("wind_profile"):
         fetch_wind_profile(weather_config)
 
-    def apply_weather_to_phase(ph):
-        ph.setdefault("track_deg", mission_track_deg)
-        wind_profile = weather_config.get("wind_profile", [])
-        wind_kt, wind_dir = get_wind_at_alt(ph.get("alt", 0.0), wind_profile)
-        ph["wind_kt"] = wind_kt
-        ph["wind_dir_deg"] = wind_dir
-        return ph
-
     def adjust_for_remaining_fuel(available_fuel, burn_kg, fuel_mj, fuel_liters, nox_g, pm_g, phase_name):
         """Prevent negative landing fuel by scaling consumption to what remains."""
         if burn_kg <= available_fuel + 1e-6 or burn_kg <= 0:
@@ -1299,7 +1366,7 @@ def run_mission(name, c):
             v = 85
             p_req = 1.0
             alt = 1000
-        ph = apply_weather_to_phase({"name":ph_name, "dur":dur, "v_kts":v, "p_req":p_req, "alt": alt})
+        ph = apply_weather_to_phase({"name":ph_name, "dur":dur, "v_kts":v, "p_req":p_req, "alt": alt}, weather_config, mission_track_deg)
 
         # --- MODIFIED: Force turbine-only reserves for overpowered Parallel Hybrid ---
         original_em_hp = 0
@@ -1353,7 +1420,7 @@ def run_mission(name, c):
                 "p_req":0.15 if "Taxi" in ph_name else (1.0 if "Take" in ph_name else 0.95),
                 "target_alt": 10000 if ph_name == "Climb" else 0,
                 "alt": ph_alt} # Use avg alt for climb calc
-        ph = apply_weather_to_phase(ph)
+        ph = apply_weather_to_phase(ph, weather_config, mission_track_deg)
         
         # Pass the pre-calculated reserve battery requirement
         # --- MODIFIED: Expect 5 return values, pass total_dist_km ---
@@ -1418,7 +1485,7 @@ def run_mission(name, c):
         cruise_ph["alt"] = current_cruise_alt # Update altitude for this loop iteration
         if c.get("type") != "Series":
             cruise_ph["v_kts"] = get_cruise_speed_ktas(current_mass, current_cruise_alt, cruise_mode)
-        cruise_ph = apply_weather_to_phase(cruise_ph)
+        cruise_ph = apply_weather_to_phase(cruise_ph, weather_config, mission_track_deg)
         
         # Check if we have enough reserves for ONE more minute of cruise
         usable_batt_kwh = current_batt_kwh - res_batt if requires_batt_reserve else current_batt_kwh
@@ -1491,7 +1558,7 @@ def run_mission(name, c):
         "alt": descent_mid_alt,
         "vsink_ms": 3.0,
     }
-    descent_ph = apply_weather_to_phase(descent_ph)
+    descent_ph = apply_weather_to_phase(descent_ph, weather_config, mission_track_deg)
     res_batt_for_descent = res_batt if requires_batt_reserve else 0.0
     f, b, _, d_dist, _, fuel_mj, fuel_liters, nox_g, pm_g = calculate_phase_burns(
         descent_ph,
