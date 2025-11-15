@@ -122,7 +122,7 @@ BASELINE_CO2_PER_KM = None
 TECH_SCENARIO = "realistic"  # options: "realistic", "optimistic_future"
 FUEL_SCENARIO = "fossil"     # options: "fossil", "saf50"
 weather_config = {
-    "mode": "mock",
+    "mode": "live",
     "lat": 52.24,
     "lon": 6.05,
     "datetime_utc": None,
@@ -346,7 +346,7 @@ def apply_weather_to_phase(phase, weather_cfg, default_track_deg):
 
 def _mock_wind_profile(config):
     profile = []
-    base_speed = 20.0
+    base_speed = 40.0
     base_dir = 240.0
     for alt in config.get("altitudes_ft", [0, 3000, 6000, 9000, 12000]):
         speed = base_speed + (alt / 3000.0) * 2.0
