@@ -697,6 +697,15 @@ with tab_run:
         st.info("Run a simulation to see key metrics.")
     else:
         row = summary_df.iloc[0]
+        display_row = row.copy()
+        if not summary_all_data.empty and "concept" in summary_all_data:
+            matching_concept = summary_all_data[summary_all_data["concept"] == row["concept"]]
+            if not matching_concept.empty:
+                enriched = matching_concept.iloc[0]
+                for key in ("range_best_km", "range_avg_km", "range_worst_km"):
+                    val = enriched.get(key)
+                    if pd.notna(val):
+                        display_row[key] = val
         cache_key = f"{tech_scenario}_{fuel_scenario}"
         if concept_label == "Baseline (Avgas)":
             baseline_result = row.to_dict()
@@ -717,7 +726,7 @@ with tab_run:
         st.markdown("#### Key metrics")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Range (km)", f"{row.get('range_avg_km', row['range_km']):.0f}")
+            st.metric("Average range (km)", f"{display_row.get('range_avg_km', row['range_km']):.0f}")
             st.metric("Cruise time (h)", f"{row['cruise_hours']:.2f}")
         with col2:
             st.metric("Landing fuel (kg)", f"{row['land_fuel_kg']:.1f}")
@@ -726,9 +735,9 @@ with tab_run:
             st.metric("CO2 (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
             st.metric("NOx (g/km)", f"{row['nox_g_per_km']:.2f}", delta=nox_delta_label)
             st.metric("Landing SOC", f"{row['land_soc']:.2f}")
-        range_best = row.get("range_best_km", row["range_km"])
-        range_avg = row.get("range_avg_km", row["range_km"])
-        range_worst = row.get("range_worst_km", row["range_km"])
+        range_best = display_row.get("range_best_km", row["range_km"])
+        range_avg = display_row.get("range_avg_km", row["range_km"])
+        range_worst = display_row.get("range_worst_km", row["range_km"])
         dir_cols = st.columns(3)
         dir_cols[0].metric("Best range (km)", f"{range_best:.0f}")
         dir_cols[1].metric("Average range (km)", f"{range_avg:.0f}")
