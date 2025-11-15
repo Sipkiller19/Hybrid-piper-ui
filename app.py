@@ -732,8 +732,18 @@ with tab_run:
             st.metric("Landing fuel (kg)", f"{row['land_fuel_kg']:.1f}")
             st.metric("Fuel reserve (kg)", f"{row['fuel_reserve_kg']:.1f}")
         with col3:
-            st.metric("CO2 (g/km)", f"{row['co2_g_per_km']:.0f}", delta=co2_delta_label)
-            st.metric("NOx (g/km)", f"{row['nox_g_per_km']:.2f}", delta=nox_delta_label)
+            st.metric(
+                "CO2 (g/km)",
+                f"{row['co2_g_per_km']:.0f}",
+                delta=co2_delta_label,
+                delta_color="inverse",
+            )
+            st.metric(
+                "NOx (g/km)",
+                f"{row['nox_g_per_km']:.2f}",
+                delta=nox_delta_label,
+                delta_color="inverse",
+            )
             st.metric("Landing SOC", f"{row['land_soc']:.2f}")
         range_best = display_row.get("range_best_km", row["range_km"])
         range_avg = display_row.get("range_avg_km", row["range_km"])
