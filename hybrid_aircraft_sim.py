@@ -1289,6 +1289,34 @@ def run_mission(name, c):
         return available_fuel, fuel_mj * scale, fuel_liters * scale, nox_g * scale, pm_g * scale
     
     dummy_mass_for_res = current_mass - (start_fuel_kg * 0.5) # Estimate landing mass
+    res_soc_dummy_precalc = (
+        batt_max * min(0.90, max(0.0, ECMS_SOC_MAX - 0.01)) if batt_max > 0 else 0.0
+    )
+
+    reserve_phases = [
+        {"name": "Pattern", "dur": 240, "v_kts": 90, "p_req": 0.35, "alt": 1000},
+        {"name": "Taxi-In", "dur": 300, "v_kts": 0, "p_req": 0.15, "alt": 0},
+        {"name": "Go-Around", "dur": 120, "v_kts": 85, "p_req": 1.0, "alt": 1000},
+    ]
+    extra_reserve_fuel = 0.0
+    reserve_cfg = deepcopy(c)
+    if reserve_cfg.get("type") == "Parallel":
+        reserve_cfg["p_em_hp"] = 0.0
+    for rp in reserve_phases:
+        ph = apply_weather_to_phase(rp.copy(), weather_config, mission_track_deg)
+        f, _, _, _, _, _, _, _, _ = calculate_phase_burns(
+            ph,
+            reserve_cfg,
+            dummy_mass_for_res,
+            res_soc_dummy_precalc,
+            batt_max,
+            concept_cd0_base,
+            total_dist_km,
+            is_reserve_calc=True,
+        )
+        if f > 0:
+            extra_reserve_fuel += f
+
     vfr_reserve_fuel_kg = compute_vfr_day_reserve_fuel(
         c,
         dummy_mass_for_res,
@@ -1297,9 +1325,9 @@ def run_mission(name, c):
         concept_cd0_base,
         total_dist_km
     )
-    res_fuel_precalc = vfr_reserve_fuel_kg
+    res_fuel_precalc = extra_reserve_fuel + vfr_reserve_fuel_kg
 
-    # DEPARTURE (Climb to 12k)
+    # DEPARTURE (Climb to 10k)
     for ph_name in ["Taxi-Out", "Takeoff", "Climb"]:
         if ph_name == "Climb":
             climb_alt_ft = 5000
