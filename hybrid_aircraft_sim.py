@@ -7,16 +7,13 @@ import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# ================================================================
-# LOGGING CONFIGURATION
-# ================================================================
+# Logging configuration
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 
 # ================================================================
 # PIPER PA-28R-200 ARROW II â€” AERODYNAMIC & PROPULSION REFERENCE
-# ================================================================
-
+# Aircraft and aero reference data
 arrow2_data = {
     "aircraft": {
         "model": "Piper PA-28R-200 Arrow II",
@@ -27,14 +24,12 @@ arrow2_data = {
         "airfoil": "NACA 64-415",      # Confirmed for Arrow II
     },
 
-    # ------------------------------------------------------------
-    # PROPELLER
-    # ------------------------------------------------------------
+    # Propeller data
     "propeller": {
         "manufacturer": "Hartzell",
-        "model": "HC-C2YK-1 / FC7666A-2",    # POH-listed constant-speed, 2-blade
+        "model": "HC-C2YK-1 / FC7666A-2",
         "type": "2-blade constant-speed, metal",
-        "diameter_m": 1.98,                 # 78 inches
+        "diameter_m": 1.98,
         "efficiency_curve": [
             # Approximate Î·_prop vs. advance ratio (J = V / (n*D))
             # Based on generic Hartzell 2-blade cruise prop curves.
@@ -46,8 +41,6 @@ arrow2_data = {
             {"J": 1.0,  "eta": 0.78},
             {"J": 1.2,  "eta": 0.60}
         ],
-        "notes": "Î· peaks ~0.82â€“0.84 near cruise (~0.6<J<0.8). Use this curve for Î·_prop interpolation.",
-        # Pre-calculate interpolation points for efficiency
         "j_points": [p["J"] for p in [
             {"J": 0.0, "eta": 0.00}, {"J": 0.2, "eta": 0.55}, {"J": 0.4, "eta": 0.73},
             {"J": 0.6, "eta": 0.80}, {"J": 0.8, "eta": 0.83}, {"J": 1.0, "eta": 0.78},
@@ -60,53 +53,42 @@ arrow2_data = {
         ]]
     },
 
-    # ------------------------------------------------------------
-    # AERODYNAMIC COEFFICIENTS (flap-dependent)
-    # ------------------------------------------------------------
+    # Flap aerodynamics
     "flap_data": {
-        # Each entry gives: flap angle (deg), CL_max, CD0 (baseline+flap), k (induced drag coeff)
-        # 0 deg = Flaps Up, Gear Up
         0:  {"CL_max": 1.21, "CD0": 0.027, "k": 0.059}, 
-        # 10 deg = Takeoff Flaps
-        10: {"CL_max": 1.28, "CD0": 0.037, "k": 0.059}, # CD0 penalty of +0.010
-        # 25 deg = Land/Go-Around Flaps
-        25: {"CL_max": 1.38, "CD0": 0.052, "k": 0.059}, # CD0 penalty of +0.025
-        # 40 deg = Full Flaps
-        40: {"CL_max": 1.49, "CD0": 0.077, "k": 0.059}, # CD0 penalty of +0.050
+        10: {"CL_max": 1.28, "CD0": 0.037, "k": 0.059},
+        25: {"CL_max": 1.38, "CD0": 0.052, "k": 0.059},
+        40: {"CL_max": 1.49, "CD0": 0.077, "k": 0.059},
     },
     
     "other_drag": {
-        "gear_down_cd0_penalty": 0.015 # Drag penalty for extended landing gear
+        "gear_down_cd0_penalty": 0.015
     }
 }
 
 
-# =========================================
-# 1. BASELINE & PHYSICS CONSTANTS
-# =========================================
+# Baseline aircraft constants
 P_BASELINE_HP = 200
-# Aircraft constants are now loaded from arrow2_data
 MTOW_KG = arrow2_data["aircraft"]["mtow_kg"]
 BASE_AIRFRAME_KG = arrow2_data["aircraft"]["empty_mass_kg"]
 S_W_M2 = arrow2_data["aircraft"]["wing_area_m2"]
 
-# Efficiencies (non-propeller)
+# Propulsion efficiencies
 ETA_MOTOR = 0.92
 ETA_GEN = 0.90
-ETA_BATT = 0.95 # Battery charge/discharge efficiency (round trip)
+ETA_BATT = 0.95
 
-# Fuel & Environmental Constants
-JET_A_DENSITY = 0.804 # kg/L
-AVGAS_DENSITY = 0.721 # kg/L
+# Fuel and emission constants
+JET_A_DENSITY = 0.804
+AVGAS_DENSITY = 0.721
 CO2_AVGAS_KG = 3.10
 CO2_JETA_KG = 3.16
-
-# Emission indices (per kg fuel)
 NOX_AVGAS_KG = 0.015
 NOX_JETA_KG = 0.020
 PM_AVGAS_KG = 0.0008
 PM_JETA_KG = 0.0015
 
+# Fuel property lookup
 FUEL_PROPERTIES = {
     "Jet-A": {
         "density": JET_A_DENSITY,
@@ -118,17 +100,19 @@ FUEL_PROPERTIES = {
     },
 }
 
+# Scenario defaults and weather state
 BASELINE_CO2_PER_KM = None
-TECH_SCENARIO = "realistic"  # options: "realistic", "optimistic_future"
-FUEL_SCENARIO = "fossil"     # options: "fossil", "saf50"
+TECH_SCENARIO = "realistic"
+FUEL_SCENARIO = "fossil"
 weather_config = {
-    "mode": "live",
+    "mode": "none",
     "lat": 52.24,
     "lon": 6.05,
     "datetime_utc": None,
     "altitudes_ft": [0, 3000, 6000, 9000, 12000],
     "wind_profile": [],
 }
+# Regulatory reserve definition
 RESERVE_POLICY = {
     "name": "EASA_VFR_DAY_30MIN",
     "extra_time_min": 30.0,
@@ -136,68 +120,59 @@ RESERVE_POLICY = {
     "reserve_power_frac": 0.65,
 }
 
-# Realistic ICE SFC Data (Based on Lycoming IO-360)
+# ICE SFC reference curve
 ICE_SFC_DATA = {
-    1.00: 0.245, # 100% Power (Takeoff, rich mixture)
-    0.75: 0.191, # 75% Power (Best power cruise)
-    0.65: 0.191, # 65% Power (Best economy cruise)
-    0.55: 0.195  # 55% Power (Long range cruise)
+    1.00: 0.245,
+    0.75: 0.191,
+    0.65: 0.191,
+    0.55: 0.195
 }
 
-# =========================================
-# ECMS PARAMETERS
-# =========================================
-ECMS_EQUIVALENCE_FACTOR = 0.04  # kg fuel equivalent per kWh (tuned lower)
-# --- MODIFIED: Set flat reserve to 0, per user request ---
-ECMS_SOC_RESERVE = 0.0         # minimum SOC to keep for landing
-ECMS_SOC_MAX = 0.95             # max SOC before regen stops
-# --- END MODIFIED ---
-ECMS_CRUISE_SOC_BUFFER = 0.10   # Extra SOC to preserve during cruise (Item 4)
-SPECIFIC_ENERGY_WH_PER_KG = 300.0   # Gravimetric density (Wh/kg)
-SPECIFIC_ENERGY_WH_PER_KG_FUTURE = 600.0  # Optimistic: ~2x energy density
+# ECMS parameters
+ECMS_EQUIVALENCE_FACTOR = 0.04
+ECMS_SOC_MAX = 0.995
+ECMS_SOC_LOW_PENALTY = 0.05
+SPECIFIC_ENERGY_WH_PER_KG = 300.0
+SPECIFIC_ENERGY_WH_PER_KG_FUTURE = 600.0
 
 BSE_PROXIES = {
-    "GT": {"NOx": 12.0, "PM": 0.006},  # g/kWh reference at mid-load
+    "GT": {"NOx": 12.0, "PM": 0.006},
     "ICE": {"NOx": 8.0, "PM": 0.030},
 }
 
 
-# =========================================
-# 2. CONCEPT INPUTS (REALISTIC SFC & AERO)
-# =========================================
+# Concept configuration templates
 BASE_CONCEPTS = {
     "Baseline (Avgas)": {
         "type": "ICE",
         "p_ice_hp": 200, "wt_ice": 180, "sfc_design": 0.20,
-        "p_em_hp": 0,    "wt_em": 0,    "batt_kwh": 0, "wt_batt": 15, # 15kg for starter batt
+        "p_em_hp": 0,    "wt_em": 0,    "batt_kwh": 0, "wt_batt": 15,
         "p_gt_hp": 0,    "wt_gt": 0,    "gt_sfc_design": 0,
         "fuel_type": "Avgas", "fuel_vol_L": 182,
         "base_mass_adder": 0,
-        "cd0_adder": 0.000, # Baseline fuselage
+        "cd0_adder": 0.000,
         "cruise_mode": "economy",
     },
     "4.1.2 Parallel Hybrid": {
         "type": "Parallel",
         "p_gt_hp": 240,  "wt_gt": 98,   "gt_sfc_design": 0.35,
         "p_gen_kw": 50,  "wt_gen": 15,
-        "p_em_hp": 50,   "wt_em": 15,   "batt_kwh": 30, "wt_batt": 0, # Placeholder, will be calculated
+        "p_em_hp": 50,   "wt_em": 15,   "batt_kwh": 30, "wt_batt": 0,
         "fuel_type": "Jet-A", "fuel_vol_L": 182,
         "base_mass_adder": 30,
-        "cd0_adder": 0.002, # Drag from cooling vents, nacelles
+        "cd0_adder": 0.002,
         "batt_c_max": 3.0,
         "batt_c_chg_max": 1.0,
         "cruise_mode": "economy",
     },  
     "4.1.3 Series Hybrid": {
         "type": "Series",
-        # --- MODIFIED: Resized GT to 290hp for optimal "constant-burn" cruise ---
         "p_gt_hp": 290,  "wt_gt": 110,  "gt_sfc_design": 0.32,
-        # --- END MODIFIED ---
         "p_gen_kw": 180, "wt_gen": 30,
-        "p_em_hp": 200,  "wt_em": 50,   "batt_kwh": 40  , "wt_batt": 0, # MODIFIED: Reduced from 60 to 30
+        "p_em_hp": 200,  "wt_em": 50,   "batt_kwh": 40  , "wt_batt": 0,
         "fuel_type": "Jet-A", "fuel_vol_L": 182,
         "base_mass_adder": 20,
-        "cd0_adder": 0.003, # Larger cooling drag
+        "cd0_adder": 0.003,
         "batt_c_max": 3.0,
         "batt_c_chg_max": 1.0,
         "cruise_mode": "economy",
@@ -206,10 +181,10 @@ BASE_CONCEPTS = {
         "type": "Parallel-Series",
         "p_gt_hp": 200,  "wt_gt": 90,   "gt_sfc_design": 0.42,
         "p_gen_kw": 150, "wt_gen": 25,
-        "p_em_hp": 200,  "wt_em": 50,   "batt_kwh": 15, "wt_batt": 0, # Placeholder, will be calculated
+        "p_em_hp": 200,  "wt_em": 50,   "batt_kwh": 15, "wt_batt": 0,
         "fuel_type": "Jet-A", "fuel_vol_L": 182,
         "base_mass_adder": 80,
-        "cd0_adder": 0.004, # Most complex, highest cooling drag
+        "cd0_adder": 0.004,
         "batt_c_max": 2.5,
         "batt_c_chg_max": 1.0,
         "cruise_mode": "economy",
@@ -323,15 +298,91 @@ def get_descent_speed_kias(mass_kg, alt_ft):
     return max(80.0, min(120.0, base + weight_correction))
 
 
-def get_cruise_speed_ktas(mass_kg, alt_ft, mode="economy"):
-    """Return nominal cruise TAS for the selected mode."""
-    if mode == "fast":
-        base = 142.0
-    else:
-        base = 130.0
-    weight_factor = mass_kg / MTOW_KG
-    weight_correction = 3.0 * (weight_factor - 1.0)
-    return max(120.0, min(150.0, base + weight_correction))
+def pick_optimal_cruise_speed(c, current_mass, concept_cd0_base, alt_ft, cruise_mode):
+    """
+    Unified optimizer for cruise TAS selection across all concepts.
+    For Series hybrids it keeps the legacy battery-neutral behaviour.
+    For other concepts it scans 110..150 KTAS and minimises equivalent fuel per distance.
+    """
+    concept_type = c.get("type", "ICE")
+    rho = get_air_density(alt_ft)
+    system_limit_kw = P_BASELINE_HP * 0.7457
+    gt_max_kw = (c.get("p_gt_hp", 0.0) + c.get("p_ice_hp", 0.0)) * 0.7457
+    em_max_kw = c.get("p_em_hp", 0.0) * 0.7457
+    gen_max_kw = c.get("p_gen_kw", gt_max_kw if gt_max_kw > 0 else 0.0)
+
+    if concept_type == "Series":
+        p_gt_sweet_kw = gt_max_kw * 0.699
+        p_generated_kw = min(p_gt_sweet_kw, gen_max_kw if gen_max_kw > 0 else p_gt_sweet_kw) * ETA_GEN
+        best_v, best_err = None, 1e9
+        for v_kts in range(100, 161, 5):
+            vel_ms = v_kts * 0.51444
+            eta_prop = get_prop_efficiency(vel_ms, "Cruise")
+            cl = (current_mass * 9.81) / (0.5 * rho * vel_ms**2 * S_W_M2)
+            current_cd0, current_k = get_aero_coeffs("Cruise", concept_cd0_base)
+            cd = current_cd0 + current_k * cl**2
+            drag_n = 0.5 * rho * vel_ms**2 * S_W_M2 * cd
+            p_req_prop_kw = (drag_n * vel_ms) / 1000.0
+            p_req_shaft_kw = p_req_prop_kw / max(0.1, eta_prop)
+            p_motor_draw_kw = p_req_shaft_kw / ETA_MOTOR
+            err = abs(p_motor_draw_kw - p_generated_kw)
+            if err < best_err - 1e-6:
+                best_err = err
+                best_v = v_kts
+        if best_v is None:
+            best_v = 135.0
+        if cruise_mode == "fast":
+            best_v = min(160.0, best_v + 10.0)
+        return best_v
+
+    # Non-series path
+    eng_type = "ICE" if concept_type == "ICE" else "GT"
+    base_sfc = c.get("sfc_design", 0.2) if eng_type == "ICE" else c.get("gt_sfc_design", 0.45)
+    speeds = range(110, 151, 2)
+    best_speed = 130.0
+    best_cost = float("inf")
+    for v_kts in speeds:
+        vel_ms = v_kts * 0.51444
+        eta_prop = get_prop_efficiency(vel_ms, "Cruise")
+        cl = (current_mass * 9.81) / (0.5 * rho * vel_ms**2 * S_W_M2)
+        current_cd0, current_k = get_aero_coeffs("Cruise", concept_cd0_base)
+        cd = current_cd0 + current_k * cl**2
+        drag_n = 0.5 * rho * vel_ms**2 * S_W_M2 * cd
+        p_prop_kw = (drag_n * vel_ms) / 1000.0
+        p_shaft_kw = p_prop_kw / max(0.1, eta_prop)
+
+        # Respect overall system cap
+        available_kw = min(system_limit_kw, gt_max_kw + em_max_kw)
+        if p_shaft_kw > available_kw + 1e-6:
+            continue
+
+        p_gt_kw = min(p_shaft_kw, gt_max_kw)
+        p_em_kw = max(0.0, p_shaft_kw - p_gt_kw)
+        if p_em_kw > em_max_kw + 1e-6:
+            continue
+
+        # Fuel consumption from GT/ICE portion
+        fuel_rate = 0.0
+        if p_gt_kw > 0 and gt_max_kw > 0:
+            load_frac = max(0.0, min(1.0, p_gt_kw / gt_max_kw))
+            sfc_kg_hp_hr = get_sfc(load_frac, eng_type, base_sfc)
+            fuel_rate = (sfc_kg_hp_hr * (p_gt_kw / 0.7457)) / 3600.0  # kg/s
+
+        batt_rate_kw = p_em_kw / max(ETA_MOTOR, 0.1)
+        batt_rate_kwh_s = batt_rate_kw / 3600.0
+        eq_rate = fuel_rate + ECMS_EQUIVALENCE_FACTOR * batt_rate_kwh_s
+        gs_ms = max(1.0, vel_ms)  # TAS ≈ GS for optimizer
+        cost = eq_rate / gs_ms
+
+        if cost < best_cost - 1e-9:
+            best_cost = cost
+            best_speed = float(v_kts)
+
+    if cruise_mode == "fast":
+        best_speed = min(150.0, best_speed + 8.0)
+    elif cruise_mode == "economy":
+        best_speed = max(110.0, best_speed)
+    return best_speed
 
 
 def apply_weather_to_phase(phase, weather_cfg, default_track_deg):
@@ -347,10 +398,13 @@ def apply_weather_to_phase(phase, weather_cfg, default_track_deg):
 def _mock_wind_profile(config):
     profile = []
     base_speed = 40.0
-    base_dir = 240.0
+    base_dir = 220.0
     for alt in config.get("altitudes_ft", [0, 3000, 6000, 9000, 12000]):
-        speed = base_speed + (alt / 3000.0) * 2.0
-        direction = (base_dir + (alt / 1000.0) * 2.0) % 360
+        shear_gain = (alt / 1000.0) * 4.0
+        gust = 10.0 * math.sin(math.radians((alt / 500.0) * 20.0))
+        speed = max(5.0, base_speed + shear_gain + gust)
+        direction_shift = (alt / 1000.0) * 6.0 + 8.0 * math.sin(math.radians((alt / 1000.0) * 15.0))
+        direction = (base_dir + direction_shift) % 360
         profile.append({"alt_ft": alt, "wind_kt": speed, "wind_dir_deg": direction})
     return profile
 
@@ -517,17 +571,21 @@ def compute_vfr_day_reserve_fuel(c, mass_for_reserve, batt_kwh_for_reserve,
         "alt": reserve_alt,
         "force_power_frac": reserve_power,
     }
+    reserve_cfg = deepcopy(c)
+    original_em_hp = reserve_cfg.get("p_em_hp", 0.0)
+    if reserve_cfg.get("type") != "Series":
+        reserve_cfg["p_em_hp"] = 0.0
     fuel_kg, batt_delta_kwh, _, _, _, _, _, _, _ = calculate_phase_burns(
         reserve_phase,
-        c,
+        reserve_cfg,
         mass_for_reserve,
         batt_kwh_for_reserve,
         batt_kwh_max,
         concept_cd0_base,
         total_dist_km,
-        res_batt_kwh=0.0,
         is_reserve_calc=True,
     )
+    reserve_cfg["p_em_hp"] = original_em_hp
 
     return max(0.0, fuel_kg)
 
@@ -550,10 +608,11 @@ def compute_directional_range(
     current_batt_kwh = base_batt_kwh
     total_dist_km = 0.0
     fuel_used = 0.0
+    cruise_speed = pick_optimal_cruise_speed(cruise_cfg, current_mass, concept_cd0_base, 10000, cruise_cfg.get("cruise_mode", "economy"))
     cruise_ph = {
         "name": "Cruise",
         "dur": 60,
-        "v_kts": get_cruise_speed_ktas(current_mass, 10000, cruise_cfg.get("cruise_mode", "economy")),
+        "v_kts": cruise_speed,
         "alt": 10000,
     }
     minutes = 0
@@ -577,7 +636,6 @@ def compute_directional_range(
             batt_kwh_max,
             concept_cd0_base,
             total_dist_km,
-            res_batt_kwh=0.0,
         )
         if (f <= 0.0 and d_dist <= 0.0) or available_fuel_kg <= 0.0:
             break
@@ -740,44 +798,8 @@ def get_aero_coeffs(phase_name, concept_cd0_base):
 # =========================================
 # 4. CORE SIMULATION
 # =========================================
-# Helper: pick Series-hybrid cruise speed that minimizes battery use at sweet-spot gen
 
-def pick_series_cruise_speed(c, current_mass, concept_cd0_base, alt_ft):
-    """Return v_kts that best matches p_generated at GT sweet-spot to motor draw, minimizing |battery flow|."""
-    # Only for Series
-    if c.get("type") != "Series":
-        return None
-    rho = get_air_density(alt_ft)
-    gt_max_kw = (c.get("p_gt_hp", 0) + c.get("p_ice_hp", 0)) * 0.7457
-    gen_max_kw = c.get("p_gen_kw", gt_max_kw if gt_max_kw > 0 else 0.0)
-    p_gt_sweet_kw = gt_max_kw * 0.699
-    p_generated_kw = min(p_gt_sweet_kw, gen_max_kw if gen_max_kw > 0 else p_gt_sweet_kw) * ETA_GEN
-
-    best_v, best_err = None, 1e9
-    for v_kts in range(100, 161, 5):  # scan 100..160 KTAS
-        vel_ms = v_kts * 0.51444
-        eta_prop = get_prop_efficiency(vel_ms, "Cruise")
-        # Aero
-        cl = (current_mass * 9.81) / (0.5 * rho * vel_ms**2 * S_W_M2)
-        current_cd0, current_k = get_aero_coeffs("Cruise", concept_cd0_base)
-        cd = current_cd0 + current_k * cl**2
-        drag_n = 0.5 * rho * vel_ms**2 * S_W_M2 * cd
-        p_req_prop_kw = (drag_n * vel_ms) / 1000.0
-        # Shaft power to meet prop power
-        p_req_shaft_kw = p_req_prop_kw / max(0.1, eta_prop)
-        # Bus power to motor
-        p_motor_draw_kw = p_req_shaft_kw / ETA_MOTOR
-        # Battery flow would be p_motor_draw_kw - p_generated_kw
-        err = abs(p_motor_draw_kw - p_generated_kw)
-        # Prefer smaller fuel per km when tie: proportional to p_gt_sweet_kw / (vel_ms)
-        if err < best_err - 1e-6 or (abs(err - best_err) < 1e-6 and (p_generated_kw / vel_ms) < (p_generated_kw / (best_v * 0.51444) if best_v else 1e9)):
-            best_err = err
-            best_v = v_kts
-    return best_v if best_v is not None else 135
-
-# --- MODIFIED: Added total_dist_km for logging ---
-
-def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max, concept_cd0_base, total_dist_km, res_batt_kwh=0, is_reserve_calc=False, phase_log_list=None):
+def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max, concept_cd0_base, total_dist_km, is_reserve_calc=False, phase_log_list=None):
     """
     Calculates the fuel and battery consumption for a single mission phase.
     Returns:
@@ -792,12 +814,10 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
         pm_g
     """
     dur = phase["dur"]
-    # --- Sanity Check for dur ---
     if dur <= 0:
         logging.warning(f"Phase duration <= 0 ({dur:.2f}s) for {phase['name']}. Using 60s fallback.")
         dur = 60.0
-    # ---
-    
+
     tas_kt = phase.get("v_kts", 0.0)
     vel_ms = tas_kt * 0.51444
     alt_ft = phase.get("alt", 0)
@@ -809,14 +829,13 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
     gs_ms = gs_kt * 0.51444
     distance_km = (gs_ms * dur) / 1000.0
     
-    # --- GET REALISTIC AERO & PROP VALUES ---
+    # Aerodynamic coefficients for this phase
     eta_prop = get_prop_efficiency(vel_ms, phase["name"])
     current_cd0, current_k = get_aero_coeffs(phase["name"], concept_cd0_base)
 
     force_power_frac = phase.get("force_power_frac")
 
-    # --- REALISTIC POWER CALCULATION ---
-    # Use drag-based power only for cruise/descent, unless force_power_frac is set.
+    # Determine shaft power demand for the phase
     if force_power_frac is not None:
         avail_hp = c.get("p_gt_hp", 0) + c.get("p_ice_hp", 0)
         if avail_hp <= 0:
@@ -827,23 +846,15 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
         cl = (current_mass * 9.81) / (0.5 * rho * vel_ms**2 * S_W_M2)
         cd = current_cd0 + current_k * cl**2
         drag_n = 0.5 * rho * vel_ms**2 * S_W_M2 * cd
-        # Base propulsive power requirement from drag
         p_drag_prop_kw = (drag_n * vel_ms) / 1000.0
-        # For DESCENT, subtract gravitational power release: m*g*|vsink|
         if phase["name"] == "Descent":
-            vsink_ms = phase.get("vsink_ms", 3.0)  # ~600 fpm default
+            vsink_ms = phase.get("vsink_ms", 3.0)
             p_req_prop_kw = max(0.0, p_drag_prop_kw - (current_mass * 9.81 * vsink_ms) / 1000.0)
         else:
-            p_req_prop_kw = p_drag_prop_kw  # Cruise and other clean phases
+            p_req_prop_kw = p_drag_prop_kw
     else:
-        # Use %-based power for Taxi, Takeoff, Go-Around
-        # --- MODIFICATION ---
-        # The system's 100% power demand is based on the 200hp limit,
-        # not the sum of all components.
+        # Percentage-based power for ground and high-power phases
         total_avail_hp = P_BASELINE_HP
-        # --- END MODIFICATION ---
-
-        # Use baseline if no power is defined (should not happen, but safe)
         if total_avail_hp == 0: total_avail_hp = P_BASELINE_HP
         
         total_avail_kw = total_avail_hp * 0.7457
@@ -853,65 +864,42 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
         p_req_prop_kw = p_req_shaft_kw * eta_prop
 
 
-    # --- DYNAMIC CLIMB OVERRIDE ---
+    # Climb power requirement with ECMS integration
     if phase["name"] == "Climb":
-        # --- MODIFICATION: Enforce 200hp system limit ---
-        # Calculate component power *first*, then cap.
-        p_gt_ice_hp = c.get("p_gt_hp",0) + c.get("p_ice_hp",0)
-        p_em_hp = c.get("p_em_hp",0)
-        
-        p_gt_ice_kw = p_gt_ice_hp * 0.7457
-        p_em_kw = p_em_hp * 0.7457
-
-        # Apply altitude de-rating for air-breathing engines
-        if c["type"] == "ICE":
-            p_gt_ice_kw *= (get_air_density(6000) / get_air_density(0))
-        elif c["type"] != "ICE" and p_gt_ice_hp > 0: # Hybrids/Turboprop
-            p_gt_ice_kw *= (get_air_density(6000) / get_air_density(0))**0.7
-        
-        # --- NEW: Respect Parallel-Series Exception ---
-        # For the Parallel-Series, the EM cannot be used for shaft power.
-        # So, for this *demand* calculation, we must set its p_em_kw to 0.
-        if c["type"] == "Parallel-Series":
-            p_em_kw = 0
-        # --- END NEW ---
-
-        # Sum the derated components
-        p_total_component_kw = p_gt_ice_kw + p_em_kw
-        
-        # NOW, cap the total available power at the 200hp system limit
-        system_limit_kw = P_BASELINE_HP * 0.7457
-        p_avail_shaft_kw = min(p_total_component_kw, system_limit_kw)
-        # --- END MODIFICATION ---
-        
-        p_avail_prop_kw = p_avail_shaft_kw * 0.95 # Assume 5% transmission loss
-
-        v_climb = 100 * 0.51444 # Climb speed
-        rho_c = get_air_density(6000) # Avg climb density
+        v_climb = max(60.0, phase.get("v_kts", 100.0)) * 0.51444
+        climb_alt = max(0.0, phase.get("alt", 6000.0))
+        rho_c = get_air_density(climb_alt)
         eta_prop_climb = get_prop_efficiency(v_climb, "Climb")
         climb_cd0, climb_k = get_aero_coeffs("Climb", concept_cd0_base)
-        
-        cl_climb = (current_mass*9.81)/(0.5*rho_c*v_climb**2*S_W_M2)
+        cl_climb = (current_mass * 9.81) / max(1e-6, (0.5 * rho_c * v_climb**2 * S_W_M2))
         drag_n = 0.5 * rho_c * v_climb**2 * S_W_M2 * (climb_cd0 + climb_k * (cl_climb**2))
-        
-        # Power available at prop = P_shaft * eta_prop
+
+        gt_component_kw = (c.get("p_gt_hp", 0.0) + c.get("p_ice_hp", 0.0)) * 0.7457
+        em_component_kw = c.get("p_em_hp", 0.0) * 0.7457
+        rho_ratio = rho_c / get_air_density(0)
+        if gt_component_kw > 0:
+            if c["type"] == "ICE":
+                gt_component_kw *= rho_ratio
+            else:
+                gt_component_kw *= rho_ratio**0.7
+        system_limit_kw = P_BASELINE_HP * 0.7457
+        total_available_kw = min(system_limit_kw, gt_component_kw + em_component_kw)
+
+        p_avail_prop_kw = total_available_kw * 0.95
         p_avail_thrust_kw = p_avail_prop_kw * eta_prop_climb
-        
-        roc_ms = ((p_avail_thrust_kw * 1000) - (drag_n * v_climb)) / (current_mass * 9.81)
-        
+        roc_ms = ((p_avail_thrust_kw * 1000.0) - (drag_n * v_climb)) / max(1.0, (current_mass * 9.81))
         target_alt = phase.get("target_alt", 8000)
-        # --- Fallback Warning for Climb ---
         if roc_ms <= 0.5:
             logging.warning(f"Climb rate <= 0.5 m/s ({roc_ms:.2f} m/s) for {c['type']}. Using fallback duration (3600s).")
             dur = 3600
+            roc_ms = max(0.1, (target_alt / dur) * 0.00508)
         else:
-            dur = (target_alt / (roc_ms * 3.28084)) # Calc duration
-        # ---
-        
-        # Power required *at the prop* is all available propulsive power
-        p_req_prop_kw = p_avail_thrust_kw
+            dur = (target_alt / (roc_ms * 3.28084))
 
-    # --- HYBRID SPLIT LOGIC ---
+        climb_energy_kw = max(0.0, (current_mass * 9.81 * roc_ms) / 1000.0)
+        p_req_prop_kw = max(0.0, ((drag_n * v_climb) / 1000.0) + climb_energy_kw)
+
+    # Hybrid power split logic
     p_gt_load, p_batt_load = 0, 0
     
     gt_max_hp = c.get("p_gt_hp", 0) + c.get("p_ice_hp", 0)
@@ -925,11 +913,10 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
     elif c["type"] != "ICE" and gt_max_hp > 0 and alt_ft > 0: # Turbines
         gt_max_kw *= (rho / get_air_density(0))**0.7 # Less severe power loss
         
-    # --- Sanity Check for gt_max_kw ---
+    # Guard against invalid derated power
     if gt_max_hp > 0 and gt_max_kw <= 0.01:
         logging.warning(f"GT max power (de-rated) is <= 0 ({gt_max_kw:.2f} kW) for {c['type']} @ {alt_ft} ft. Using 1kW fallback.")
         gt_max_kw = 1.0
-    # ---
 
     current_soc = current_batt_kwh / batt_kwh_max if batt_kwh_max > 0 else 0
     if batt_kwh_max > 0:
@@ -943,46 +930,37 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
     is_hybrid = c["type"] in ["Parallel", "Series", "Parallel-Series"]
     gt_mode = None  # For Series logging: OFF/MAX/SWEET
     fuel_type = c.get("fuel_type", "Jet-A")
-    
-    # --- NEW: Move Absolute Reserve Calculation UP ---
-    # Find the *absolute* minimum kWh that must be reserved.
-    # This is the HIGHER of the flat 20% reserve OR the calculated go-around reserve.
-    soc_reserve_kwh = batt_kwh_max * ECMS_SOC_RESERVE
-    absolute_reserve_kwh = max(soc_reserve_kwh, res_batt_kwh)
-    # --- END NEW ---
+    soc_frac_for_penalty = current_batt_kwh / batt_kwh_max if batt_kwh_max > 0 else 0.0
+    if soc_frac_for_penalty >= ECMS_SOC_LOW_PENALTY:
+        low_soc_penalty = 0.0
+    else:
+        deficit = (ECMS_SOC_LOW_PENALTY - soc_frac_for_penalty) / max(ECMS_SOC_LOW_PENALTY, 1e-6)
+        low_soc_penalty = (deficit ** 3) * 50.0
     
     # Power required *at the shaft*
     p_req_shaft = p_req_prop_kw / eta_prop if eta_prop > 0.1 else p_req_prop_kw / 0.1
     
-    # --- Sanity Check for p_req_shaft ---
+    # Ensure shaft demand stays non-negative
     if p_req_shaft <= 0:
-        # Note: This can be negative during descent (regen), but ECMS loop handles p_req_shaft
-        # as a *demand*. We'll set a small floor for taxi/idle.
         if phase["name"] in ["Taxi-Out", "Taxi-In"]:
-                fallback_power = 0.05 * max(1.0, gt_max_kw) # 5% idle
+                fallback_power = 0.05 * max(1.0, gt_max_kw)
                 logging.info(f"Shaft power <= 0 ({p_req_shaft:.2f} kW) for {phase['name']}. Using {fallback_power:.1f} kW fallback.")
                 p_req_shaft = fallback_power
         elif p_req_shaft < 0:
-                p_req_shaft = 0 # Can't demand negative power
-    # ---
+                p_req_shaft = 0
             
-    # --- 4. ECMS Optimization Logic ---
-    ecms_failsafe_triggered = False # --- MODIFIED ---
+    # ECMS optimization logic
+    ecms_failsafe_triggered = False
     if is_hybrid:
-        # --- MODIFIED: Split logic for Series vs Parallel ---
-        # --- MODIFIED: Corrected type check from "Series Hybrid" to "Series" ---
         if c["type"] == "Series":
-            # --- SERIES ECMS OPTIMIZATION ---
+            # Series hybrid ECMS search
             p_shaft_req = p_req_shaft
             p_motor_elec_kw = p_shaft_req / ETA_MOTOR
             p_gt_load = 0.0
             p_batt_load = 0.0
             gt_mode = "OFF"
 
-            # Dynamic penalty mirrors the Parallel logic
-            soc_frac = max(0, (current_batt_kwh - absolute_reserve_kwh)) / max(1.0, (batt_kwh_max - absolute_reserve_kwh))
-            penalty_multiplier = ((1.0 - soc_frac)**4) * 20.0
-            dynamic_s_factor = ECMS_EQUIVALENCE_FACTOR * (1.0 + penalty_multiplier)
+            dynamic_s_factor = ECMS_EQUIVALENCE_FACTOR * (1.0 + low_soc_penalty)
 
             fractions = np.linspace(0, 1.0, 21)  # 0% ... 100% GT power
             best_cost = 1e9
@@ -1021,17 +999,14 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
                 batt_delta_kwh_candidate = batt_rate_kw * (dur / 3600.0)
                 new_batt_kwh = current_batt_kwh - batt_delta_kwh_candidate
 
-                discharge_limit_kwh = absolute_reserve_kwh
-                if phase["name"] == "Cruise" and gt_max_kw < p_shaft_req:
-                    discharge_limit_kwh += (batt_kwh_max * ECMS_CRUISE_SOC_BUFFER)
-
-                if batt_rate_kw > 0 and new_batt_kwh < discharge_limit_kwh:
-                    continue  # Violates reserve during discharge
-
+                if batt_rate_kw > 0 and is_reserve_calc:
+                    continue  # Engine-only reserve calculation
+                if batt_rate_kw > 0 and new_batt_kwh < -1e-3:
+                    continue
                 if batt_rate_kw < 0 and batt_kwh_max > 0:
                     charge_limit_kwh = batt_kwh_max * ECMS_SOC_MAX
                     if new_batt_kwh > charge_limit_kwh:
-                        continue  # Exceeds max SOC when charging
+                        continue
 
                 batt_rate_kwh_s = batt_rate_kw / 3600.0
                 total_cost = fuel_rate + dynamic_s_factor * batt_rate_kwh_s
@@ -1060,25 +1035,11 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
                     gt_mode = "ECMS" if not ecms_failsafe_triggered else "FAIL"
             else:
                 gt_mode = "OFF"
-            # --- END SERIES ECMS OPTIMIZATION ---
         
         elif c["type"] in ["Parallel", "Parallel-Series"]:
-            # --- MODIFIED: THIS ENTIRE BLOCK IS REBUILT TO FIX A MAJOR LOGIC/SYNTAX ERROR ---
             
-            # --- 1. SET UP DYNAMIC PENALTY ---
-            # This makes battery use more "expensive" as SOC approaches the reserve,
-            # preventing oscillation.
-            soc_frac = max(0, (current_batt_kwh - absolute_reserve_kwh)) / max(1.0, (batt_kwh_max - absolute_reserve_kwh))
-            # At SOC=MAX (frac=1.0), penalty=0, factor = base
-            # At SOC=RESERVE (frac=0.0), penalty is 20, factor = 21 * base
-            penalty_multiplier = ((1.0 - soc_frac)**4) * 20.0 
-            dynamic_s_factor = ECMS_EQUIVALENCE_FACTOR * (1.0 + penalty_multiplier)
-            if c["type"] == "Parallel-Series":
-                # Encourage battery use when SOC is high by lowering the equivalence factor.
-                discharge_bias = 0.25 + 0.75 * (1.0 - current_soc)
-                dynamic_s_factor *= max(0.1, min(1.0, discharge_bias))
+            dynamic_s_factor = ECMS_EQUIVALENCE_FACTOR * (1.0 + low_soc_penalty)
 
-            # --- 2. SET UP ECMS LOOP VARIABLES ---
             p_shaft_req = p_req_shaft # Renamed for clarity
             fractions = np.linspace(0, 1.0, 21) # Define search grid
             best_cost, best_split = 1e9, (0, 0) # (p_gt_kw, p_batt_kw)
@@ -1088,18 +1049,10 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
             if eng_type == "ICE":
                 base_sfc = c.get("sfc_design", 0.2)
             
-            # --- 3. RUN ECMS SEARCH LOOP ---
             for f in fractions:
                 p_gt_kw = f * gt_max_kw # Proposed GT shaft power
                 
-                # Handle "Parallel-Series" exception
-                if c["type"] == "Parallel-Series":
-                    if phase["name"] == "Go-Around":
-                        p_em_shaft_req = 0  # GT-only for go-around
-                    else:
-                        p_em_shaft_req = max(0, p_shaft_req - p_gt_kw)
-                else: # For "Parallel"
-                    p_em_shaft_req = max(0, p_shaft_req - p_gt_kw)
+                p_em_shaft_req = max(0.0, p_shaft_req - p_gt_kw)
 
                 # Apply EM Power Limit
                 if p_em_shaft_req > em_max_kw:
@@ -1116,34 +1069,21 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
 
                 # Calculate battery power draw (discharge is +, charge is -)
                 batt_rate_kw = p_em_shaft_req / ETA_MOTOR  # discharge (+)
-                if p_gt_kw > p_shaft_req and current_soc < ECMS_SOC_MAX:
+                if p_gt_kw > p_shaft_req and current_batt_kwh < (batt_kwh_max * ECMS_SOC_MAX):
                     surplus_shaft_kw = p_gt_kw - p_shaft_req
                     gen_input_kw = min(surplus_shaft_kw, gen_max_kw if gen_max_kw > 0 else surplus_shaft_kw)
                     batt_rate_kw = -gen_input_kw * ETA_GEN # recharge (-)
-
-                # Go-Around rule: Parallel-Series must not discharge the battery
-                if (
-                    c["type"] == "Parallel-Series"
-                    and phase["name"] == "Go-Around"
-                    and batt_rate_kw > 0
-                ):
+                
+                if batt_rate_kw > 0 and is_reserve_calc:
                     continue
+                new_batt_kwh = current_batt_kwh - (batt_rate_kw * (dur / 3600.0))
+                if batt_rate_kw > 0 and new_batt_kwh < -1e-3:
+                    continue
+                if batt_rate_kw < 0 and batt_kwh_max > 0:
+                    charge_limit_kwh = batt_kwh_max * ECMS_SOC_MAX
+                    if new_batt_kwh > charge_limit_kwh:
+                        continue
                 
-                # --- 4. APPLY RESERVE LOGIC (INSIDE LOOP) ---
-                # Define the minimum *total kWh* required to allow discharge
-                discharge_limit_kwh = absolute_reserve_kwh
-                if phase["name"] == "Cruise":
-                    # Only add cruise buffer if turbine is UNDERPOWERED
-                    if gt_max_kw < p_shaft_req:
-                        discharge_limit_kwh += (batt_kwh_max * ECMS_CRUISE_SOC_BUFFER)
-                
-                # Don't allow discharge if SOC (in kWh) is too low
-                if batt_rate_kw > 0 and current_batt_kwh <= discharge_limit_kwh:
-                    batt_rate_kw = 0 # GT must take up the slack
-                    if p_gt_kw < p_shaft_req: 
-                        continue # This option is invalid
-                
-                # --- 5. CALCULATE FINAL COST (INSIDE LOOP) ---
                 batt_rate_kwh_s = batt_rate_kw / 3600.0
                 total_cost = fuel_rate + dynamic_s_factor * batt_rate_kwh_s
 
@@ -1152,26 +1092,22 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
                     best_cost = total_cost
                     best_split = (p_gt_kw, batt_rate_kw) # (GT shaft kW, Batt draw kW)
 
-            # --- END OF ECMS LOOP ---
 
-            # --- 6. HANDLE FAILSAFE (OUTSIDE LOOP) ---
             if best_cost == 1e9:
                 p_gt_load = gt_max_kw
                 p_batt_load = 0
-                if current_batt_kwh > absolute_reserve_kwh and c["type"] != "Parallel-Series":
-                    p_batt_load = (em_max_kw / ETA_MOTOR)
+                if current_batt_kwh > 0 and em_max_kw > 0:
+                    p_batt_load = em_max_kw / max(ETA_MOTOR, 0.1)
                 best_split = (p_gt_load, p_batt_load)
                 logging.warning(f"ECMS failsafe triggered for {phase['name']}. Demand may exceed total power.")
                 ecms_failsafe_triggered = True
 
             p_gt_load, p_batt_load = best_split # Assign the best split
-            # --- END OF REBUILT BLOCK ---
     
     elif not is_hybrid: # ICE/Turboprop
         p_gt_load = p_req_shaft # Engine provides all shaft power
         p_batt_load = 0
 
-    # --- DEFAULT CONSUMPTION BLOCK ---
     fuel_kg, batt_delta = 0, 0
     if p_gt_load > 0:
         eng = "GT" if c.get("p_gt_hp", 0) > 0 else "ICE"
@@ -1219,9 +1155,14 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
     if batt_kwh_max > 0:
         batt_delta_raw = p_batt_load * (dur / 3600.0)
     
-    # --- 5. Add regeneration (Boosted) ---
-    allow_regen = c.get("type") != "Series"
-    if is_hybrid and allow_regen and phase["name"] in ["Descent", "Pattern"] and current_soc < ECMS_SOC_MAX:
+    allow_regen = (
+        is_hybrid
+        and batt_kwh_max > 0
+        and phase["name"] in ["Descent", "Pattern"]
+        and phase.get("alt", 0) > 1000
+        and current_batt_kwh < batt_kwh_max * ECMS_SOC_MAX
+    )
+    if allow_regen:
         regen_shaft_kw = min(30.0, gen_max_kw if gen_max_kw > 0 else 30.0)
         if batt_chg_max_kw > 0:
             regen_shaft_kw = min(regen_shaft_kw, batt_chg_max_kw / max(ETA_GEN, 0.1))
@@ -1231,24 +1172,12 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
             regen_delta_kwh_at_batt = -regen_shaft_kw * ETA_GEN * (dur / 3600.0)
             batt_delta_raw += regen_delta_kwh_at_batt # Add regen charge
     
-    # --- MODIFIED: Battery Drawable Limit Failsafe (per user request) ---
-    # Only apply this failsafe *unless* we are explicitly pre-calculating the reserves
-    if (
-        batt_delta_raw > 0
-        and not is_reserve_calc
-        and c.get("type") not in ["Parallel-Series", "Series"]
-    ):
-        # Calculate the maximum energy we are *allowed* to draw.
-        # This is all energy above the absolute reserve.
-        max_drawable_kwh = current_batt_kwh - absolute_reserve_kwh
-        
+    if batt_delta_raw > 0 and not is_reserve_calc and batt_kwh_max > 0:
+        max_drawable_kwh = current_batt_kwh
         if batt_delta_raw > max_drawable_kwh:
-            # We are trying to draw more than is available above the reserve.
-            # Cap the draw at what's available (which may be negative, forcing a charge)
             logging.warning(f"  Phase {phase['name']:<10}: Capping batt draw. Tried: {batt_delta_raw:.1f} kWh, Max: {max_drawable_kwh:.1f} kWh")
-            batt_delta_raw = max_drawable_kwh # Set to max_drawable, not max(0, ...)
+            batt_delta_raw = max_drawable_kwh
 
-    # --- Physical battery limits (apply to all concepts) ---
     if batt_kwh_max > 0:
         # Prevent discharging below zero
         if batt_delta_raw > current_batt_kwh:
@@ -1259,7 +1188,6 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
             max_charge_kwh = batt_kwh_max - current_batt_kwh
             if -batt_delta_raw > max_charge_kwh:
                 batt_delta_raw = -max_charge_kwh
-    # --- END MODIFIED ---
 
     # Apply storage efficiency to final battery delta
     batt_delta = 0
@@ -1269,13 +1197,10 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
         batt_delta = batt_delta_raw # 10kWh needed -> 10kWh drawn
         # (Discharge efficiency was already handled in ETA_MOTOR)
 
-    # --- 7. Log ECMS diagnostic data ---
     if is_hybrid:
-        # --- MODIFIED: Added total_dist_km to log output ---
         mode_str = f" | GTmode={gt_mode}" if (c.get("type") == "Series" and gt_mode is not None) else ""
-        logging.info(f"  Phase {phase['name']:<10}: Dist={total_dist_km:6.0f} km | GT={p_gt_load:6.1f} kW | Batt={p_batt_load:6.1f} kW | SOC={current_soc:.2f} (Abs. Res: {absolute_reserve_kwh:.1f} kWh){mode_str}")
+        logging.info(f"  Phase {phase['name']:<10}: Dist={total_dist_km:6.0f} km | GT={p_gt_load:6.1f} kW | Batt={p_batt_load:6.1f} kW | SOC={current_soc:.2f}{mode_str}")
 
-    # --- MODIFIED: Return failsafe status ---
     if phase_log_list is not None:
         phase_log_list.append({
             "concept": c.get("name", "UNKNOWN"),
@@ -1310,7 +1235,6 @@ def calculate_phase_burns(phase, c, current_mass, current_batt_kwh, batt_kwh_max
 
 def run_mission(name, c):
     global BASELINE_CO2_PER_KM
-    logging.info(f"\n--- {name.upper()} ---")
     fuel_dens = JET_A_DENSITY if c["fuel_type"] == "Jet-A" else AVGAS_DENSITY
     current_fuel_kg = c["fuel_vol_L"] * fuel_dens
     start_fuel_kg = current_fuel_kg
@@ -1364,63 +1288,16 @@ def run_mission(name, c):
         logging.warning(f"!! [WARNING: FUEL BELOW ZERO] Capping {phase_name} burn from {burn_kg:.2f} kg to available {available_fuel:.2f} kg.")
         return available_fuel, fuel_mj * scale, fuel_liters * scale, nox_g * scale, pm_g * scale
     
-    # --- NEW: Pre-calculate reserve battery need ---
-    # We must calculate this *before* climb so the climb phase can respect it
-    res_fuel_precalc, res_batt_precalc = 0, 0
-    requires_batt_reserve = c["type"] not in ["Parallel-Series", "Series"]
     dummy_mass_for_res = current_mass - (start_fuel_kg * 0.5) # Estimate landing mass
-    # Use 100% SOC for the dummy calculation to ensure we are not capped
-    # Start below SOC max so reserve pre-calc allows regen on descent/pattern
-    res_soc_dummy_precalc = batt_max * min(0.90, max(0.0, ECMS_SOC_MAX - 0.01)) 
-    reserve_phases = ["Pattern", "Taxi-In", "Go-Around"]
-    for ph_name in reserve_phases:
-        if ph_name == "Pattern":
-            dur = 240
-            v = 90
-            p_req = 0.35
-            alt = 1000
-        elif ph_name == "Taxi-In":
-            dur = 300
-            v = 0
-            p_req = 0.15
-            alt = 0
-        else:  # Go-Around
-            dur = 120
-            v = 85
-            p_req = 1.0
-            alt = 1000
-        ph = apply_weather_to_phase({"name":ph_name, "dur":dur, "v_kts":v, "p_req":p_req, "alt": alt}, weather_config, mission_track_deg)
-
-        # --- MODIFIED: Force turbine-only reserves for overpowered Parallel Hybrid ---
-        original_em_hp = 0
-        if c["type"] == "Parallel" and ph_name in reserve_phases:
-            original_em_hp = c["p_em_hp"]
-            c["p_em_hp"] = 0 # Force engine-only for this calculation
-        # --- END MODIFIED ---
-
-        # Call with res_batt_kwh=0 and set is_reserve_calc=True to disable the failsafe
-        # --- MODIFIED: Expect 5 return values, pass total_dist_km ---
-        f, b, _, _, _, _, _, _, _ = calculate_phase_burns(ph, c, dummy_mass_for_res, res_soc_dummy_precalc, batt_max, concept_cd0_base, total_dist_km, res_batt_kwh=0, is_reserve_calc=True)
-        
-        # --- MODIFIED: Restore EM HP if it was changed ---
-        if original_em_hp > 0:
-            c["p_em_hp"] = original_em_hp
-        # --- END MODIFIED ---
-        
-        res_fuel_precalc += f
-        if b > 0: 
-            res_batt_precalc += b
-# --- END NEW ---
-
     vfr_reserve_fuel_kg = compute_vfr_day_reserve_fuel(
         c,
         dummy_mass_for_res,
-        res_soc_dummy_precalc,
+        current_batt_kwh,
         batt_max,
         concept_cd0_base,
         total_dist_km
     )
-    res_fuel_precalc += vfr_reserve_fuel_kg
+    res_fuel_precalc = vfr_reserve_fuel_kg
 
     # DEPARTURE (Climb to 12k)
     for ph_name in ["Taxi-Out", "Takeoff", "Climb"]:
@@ -1446,8 +1323,6 @@ def run_mission(name, c):
         ph = apply_weather_to_phase(ph, weather_config, mission_track_deg)
         
         # Pass the pre-calculated reserve battery requirement
-        # --- MODIFIED: Expect 5 return values, pass total_dist_km ---
-        reserve_kwh_for_phase = res_batt_precalc if requires_batt_reserve else 0.0
         f, b, dur, d_dist, _, fuel_mj, fuel_liters, nox_g, pm_g = calculate_phase_burns(
             ph,
             c,
@@ -1456,7 +1331,6 @@ def run_mission(name, c):
             batt_max,
             concept_cd0_base,
             total_dist_km,
-            res_batt_kwh=reserve_kwh_for_phase,
             phase_log_list=phase_log,
         )
         f, fuel_mj, fuel_liters, nox_g, pm_g = adjust_for_remaining_fuel(
@@ -1473,60 +1347,23 @@ def run_mission(name, c):
     # RESERVES
     # Use the pre-calculated values
     res_fuel = res_fuel_precalc
-    res_batt = res_batt_precalc if requires_batt_reserve else 0.0
-            
     if current_fuel_kg < res_fuel:
         logging.warning(f"!! [FAILED: INSUFFICIENT FUEL FOR RESERVES] Fuel Req: {res_fuel:.1f}kg, Have: {current_fuel_kg:.1f}kg !!"); return None, phase_log
-    
-    # The main check is now simpler: do we have *more* than the reserve requirement?
-    # We check against the *absolute* reserve, not the percentage.
-    if requires_batt_reserve and current_batt_kwh < res_batt:
-        logging.warning(f"!! [FAILED: INSUFFICENT BATT FOR RESERVES] Batt Req: {res_batt:.1f}kWh, Have (total): {current_batt_kwh:.1f}kWh !!"); return None, phase_log
-    
-    # Also check against the 20% flat reserve
-    if requires_batt_reserve and current_batt_kwh < (batt_max * ECMS_SOC_RESERVE):
-            logging.warning(f"!! [FAILED: BELOW MIN SOC RESERVE] Min SOC: {batt_max * ECMS_SOC_RESERVE:.1f}kWh, Have: {current_batt_kwh:.1f}kWh !!"); return None, phase_log
 
 
     # CRUISE
-    # --- MODIFIED: Set up dynamic cruise altitude ---
     current_cruise_alt = 10000
-    cruise_speed = get_cruise_speed_ktas(current_mass, current_cruise_alt, cruise_mode)
+    cruise_speed = pick_optimal_cruise_speed(c, current_mass, concept_cd0_base, current_cruise_alt, cruise_mode)
     cruise_ph = {"name":"Cruise", "dur":60, "v_kts":cruise_speed, "alt": current_cruise_alt}
-    # If Series: choose an efficiency-matched cruise speed so battery stays mostly neutral
-    if c.get("type") == "Series":
-        v_opt = pick_series_cruise_speed(c, current_mass, concept_cd0_base, current_cruise_alt)
-        if v_opt is not None:
-            if cruise_mode == "fast":
-                cruise_ph["v_kts"] = min(160.0, v_opt + 10.0)
-            else:
-                cruise_ph["v_kts"] = v_opt
-        else:
-            cruise_ph["v_kts"] = cruise_speed
     cruise_mins = 0
     while True:
         cruise_ph["alt"] = current_cruise_alt # Update altitude for this loop iteration
-        if c.get("type") != "Series":
-            cruise_ph["v_kts"] = get_cruise_speed_ktas(current_mass, current_cruise_alt, cruise_mode)
+        cruise_ph["v_kts"] = pick_optimal_cruise_speed(c, current_mass, concept_cd0_base, current_cruise_alt, cruise_mode)
         cruise_ph = apply_weather_to_phase(cruise_ph, weather_config, mission_track_deg)
         
-        # Check if we have enough reserves for ONE more minute of cruise
-        usable_batt_kwh = current_batt_kwh - res_batt if requires_batt_reserve else current_batt_kwh
+        if (current_fuel_kg - res_fuel) < 0.5:
+            break
         
-        # Failsafe check: we must also be above the flat 20% reserve
-        if requires_batt_reserve and current_batt_kwh < (batt_max * ECMS_SOC_RESERVE):
-                break 
-        
-        if requires_batt_reserve:
-            if (current_fuel_kg - res_fuel) < 0.5 and usable_batt_kwh < 0.1:
-                break
-        else:
-            if (current_fuel_kg - res_fuel) < 0.5:
-                break
-        
-        # Pass the calculated res_batt (in kWh) to the ECMS logic
-        # --- MODIFIED: Expect 5 return values, pass total_dist_km ---
-        res_batt_for_cruise = res_batt if requires_batt_reserve else 0.0
         f, b, _, d_dist, failsafe_triggered, fuel_mj, fuel_liters, nox_g, pm_g = calculate_phase_burns(
             cruise_ph,
             c,
@@ -1535,14 +1372,12 @@ def run_mission(name, c):
             batt_max,
             concept_cd0_base,
             total_dist_km,
-            res_batt_kwh=res_batt_for_cruise,
             phase_log_list=phase_log,
         )
         f, fuel_mj, fuel_liters, nox_g, pm_g = adjust_for_remaining_fuel(
             current_fuel_kg, f, fuel_mj, fuel_liters, nox_g, pm_g, "Cruise"
         )
         
-        # --- MODIFIED: Handle ECMS failsafe by descending ---
         if failsafe_triggered:
             if current_cruise_alt == 10000:
                 logging.warning(f"!! ECMS Failsafe at 10,000 ft. Descending to 6,000 ft to continue cruise.")
@@ -1551,12 +1386,10 @@ def run_mission(name, c):
             elif current_cruise_alt == 6000:
                 logging.warning(f"!! ECMS Failsafe triggered again at 6,000 ft. Ending cruise.")
                 break # Exit cruise loop
-        # --- END MODIFIED ---
             
         # Check if this minute of cruise would put us BELOW our reserves
         # This check is now a redundant failsafe, as the ECMS should handle it
-        if (current_fuel_kg - f) < res_fuel or (requires_batt_reserve and (current_batt_kwh - b) < res_batt):
-            # --- MODIFIED: Improved logging ---
+        if (current_fuel_kg - f) < res_fuel:
             logging.info(f"Cruise ended at {current_cruise_alt} ft: Reached reserve limits.")
             break # Stop cruising, we're at our reserve limit
             
@@ -1582,7 +1415,6 @@ def run_mission(name, c):
         "vsink_ms": 3.0,
     }
     descent_ph = apply_weather_to_phase(descent_ph, weather_config, mission_track_deg)
-    res_batt_for_descent = res_batt if requires_batt_reserve else 0.0
     f, b, _, d_dist, _, fuel_mj, fuel_liters, nox_g, pm_g = calculate_phase_burns(
         descent_ph,
         c,
@@ -1591,7 +1423,6 @@ def run_mission(name, c):
         batt_max,
         concept_cd0_base,
         total_dist_km,
-        res_batt_kwh=res_batt_for_descent,
         phase_log_list=phase_log,
     )
     f, fuel_mj, fuel_liters, nox_g, pm_g = adjust_for_remaining_fuel(
@@ -1635,10 +1466,8 @@ def run_mission(name, c):
         pm_per_km_mg = 0.0
         env_str = "N"
 
-    # --- MODIFIED: Added final fuel and SOC to log output ---
     final_soc = current_batt_kwh / batt_max if batt_max > 0 else 0
     logging.info(f"Cruise: {cruise_mins/60:.1f} hrs | Range: {total_dist_km:.0f} km | Land Fuel: {current_fuel_kg:.1f} kg | Fuel Res: {res_fuel:.1f} kg | Land SOC: {final_soc:.2f}")
-    # --- END MODIFIED ---
     logging.info(f"ENVIRON: {env_str} | NOx: {nox_per_km_g:.2f} g/km | PM: {pm_per_km_mg:.1f} mg/km")
     if total_dist_km > 0:
         energy_per_km_mj = total_fuel_mj / total_dist_km
@@ -1674,7 +1503,6 @@ def run_mission(name, c):
     }
     return result, phase_log
 
-# --- RUN ALL CONCEPTS ---
 def run_all_concepts():
     global TECH_SCENARIO, FUEL_SCENARIO, BASELINE_CO2_PER_KM
     summary_rows = []
