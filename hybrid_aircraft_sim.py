@@ -298,20 +298,8 @@ def get_descent_speed_kias(mass_kg, alt_ft):
     return max(80.0, min(120.0, base + weight_correction))
 
 
-def get_nominal_cruise_speed(mass_kg, mode="economy"):
-    """Legacy cruise-speed schedule for pure ICE concepts."""
-    base = 142.0 if mode == "fast" else 130.0
-    weight_factor = mass_kg / MTOW_KG
-    weight_correction = 3.0 * (weight_factor - 1.0)
-    return max(120.0, min(150.0, base + weight_correction))
-
-
 def pick_optimal_cruise_speed(c, current_mass, concept_cd0_base, alt_ft, cruise_mode):
-    """
-    Unified optimizer for cruise TAS selection across all concepts.
-    For Series hybrids it keeps the legacy battery-neutral behaviour.
-    For other concepts it scans 110..150 KTAS and minimises equivalent fuel per distance.
-    """
+    """Scan 110-150 KTAS and pick the speed with the lowest equivalent fuel per distance."""
     concept_type = c.get("type", "ICE")
     rho = get_air_density(alt_ft)
     system_limit_kw = P_BASELINE_HP * 0.7457
@@ -319,34 +307,6 @@ def pick_optimal_cruise_speed(c, current_mass, concept_cd0_base, alt_ft, cruise_
     em_max_kw = c.get("p_em_hp", 0.0) * 0.7457
     gen_max_kw = c.get("p_gen_kw", gt_max_kw if gt_max_kw > 0 else 0.0)
 
-    if concept_type == "ICE":
-        return get_nominal_cruise_speed(current_mass, cruise_mode)
-
-    if concept_type == "Series":
-        p_gt_sweet_kw = gt_max_kw * 0.699
-        p_generated_kw = min(p_gt_sweet_kw, gen_max_kw if gen_max_kw > 0 else p_gt_sweet_kw) * ETA_GEN
-        best_v, best_err = None, 1e9
-        for v_kts in range(100, 161, 5):
-            vel_ms = v_kts * 0.51444
-            eta_prop = get_prop_efficiency(vel_ms, "Cruise")
-            cl = (current_mass * 9.81) / (0.5 * rho * vel_ms**2 * S_W_M2)
-            current_cd0, current_k = get_aero_coeffs("Cruise", concept_cd0_base)
-            cd = current_cd0 + current_k * cl**2
-            drag_n = 0.5 * rho * vel_ms**2 * S_W_M2 * cd
-            p_req_prop_kw = (drag_n * vel_ms) / 1000.0
-            p_req_shaft_kw = p_req_prop_kw / max(0.1, eta_prop)
-            p_motor_draw_kw = p_req_shaft_kw / ETA_MOTOR
-            err = abs(p_motor_draw_kw - p_generated_kw)
-            if err < best_err - 1e-6:
-                best_err = err
-                best_v = v_kts
-        if best_v is None:
-            best_v = 135.0
-        if cruise_mode == "fast":
-            best_v = min(160.0, best_v + 10.0)
-        return best_v
-
-    # Non-series path
     eng_type = "ICE" if concept_type == "ICE" else "GT"
     base_sfc = c.get("sfc_design", 0.2) if eng_type == "ICE" else c.get("gt_sfc_design", 0.45)
     speeds = range(110, 151, 2)
