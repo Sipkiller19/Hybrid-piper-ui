@@ -298,6 +298,14 @@ def get_descent_speed_kias(mass_kg, alt_ft):
     return max(80.0, min(120.0, base + weight_correction))
 
 
+def get_nominal_cruise_speed(mass_kg, mode="economy"):
+    """Legacy cruise-speed schedule for pure ICE concepts."""
+    base = 142.0 if mode == "fast" else 130.0
+    weight_factor = mass_kg / MTOW_KG
+    weight_correction = 3.0 * (weight_factor - 1.0)
+    return max(120.0, min(150.0, base + weight_correction))
+
+
 def pick_optimal_cruise_speed(c, current_mass, concept_cd0_base, alt_ft, cruise_mode):
     """
     Unified optimizer for cruise TAS selection across all concepts.
@@ -310,6 +318,9 @@ def pick_optimal_cruise_speed(c, current_mass, concept_cd0_base, alt_ft, cruise_
     gt_max_kw = (c.get("p_gt_hp", 0.0) + c.get("p_ice_hp", 0.0)) * 0.7457
     em_max_kw = c.get("p_em_hp", 0.0) * 0.7457
     gen_max_kw = c.get("p_gen_kw", gt_max_kw if gt_max_kw > 0 else 0.0)
+
+    if concept_type == "ICE":
+        return get_nominal_cruise_speed(current_mass, cruise_mode)
 
     if concept_type == "Series":
         p_gt_sweet_kw = gt_max_kw * 0.699
